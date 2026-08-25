@@ -276,6 +276,7 @@ export class LiveDiscordRunRenderer {
   private thinkingVisible: boolean;
   private finalized = false;
   private finalDeliverySuccessful = false;
+  private deliveredAssistantText = "";
   private runModelReference?: string;
   private runThinkingLevel?: string;
   private runSupportsThinking?: boolean;
@@ -395,6 +396,7 @@ export class LiveDiscordRunRenderer {
       }
       const completedChunk = this.activeAssistantEntry.text;
       this.activeAssistantEntry = undefined;
+      this.deliveredAssistantText += completedChunk;
       await this.replaceStatusWithReport(completedChunk);
       await this.createWorkingStatus();
       return;
@@ -489,12 +491,25 @@ export class LiveDiscordRunRenderer {
       this.statusTimer = undefined;
     }
 
-    await this.replaceStatusWithReport(finalResponse || "Done.");
-    await withTimeout(
-      this.target.createFollowUp({ content: this.completedStatus() }),
-      this.operationTimeoutMs,
-      "Discord completion notification creation",
-    );
+    const finalReport = finalResponse.startsWith(this.deliveredAssistantText)
+      ? finalResponse.slice(this.deliveredAssistantText.length).trim()
+      : finalResponse;
+
+    if (!finalReport && this.activeStatusMessage) {
+      await withTimeout(
+        this.activeStatusMessage.edit({ content: this.completedStatus() }),
+        this.operationTimeoutMs,
+        "Discord working status completion edit",
+      );
+      this.activeStatusMessage = undefined;
+    } else {
+      await this.replaceStatusWithReport(finalReport || "Done.");
+      await withTimeout(
+        this.target.createFollowUp({ content: this.completedStatus() }),
+        this.operationTimeoutMs,
+        "Discord completion notification creation",
+      );
+    }
     this.finalDeliverySuccessful = true;
   }
 

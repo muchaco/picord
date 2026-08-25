@@ -121,13 +121,12 @@ describe("Discord live report rendering", () => {
     await renderer.onUpdate({ type: "assistant_delta", delta: "Második kör." });
     await renderer.onUpdate({ type: "assistant_chunk_end" });
 
-    await renderer.finalize("A munka elkészült és ellenőrzött.");
+    await renderer.finalize("Köztes riport.Második kör.");
     await renderer.finalize("Ezt már nem szabad kézbesíteni.");
 
     expect(recording.messages).toEqual([
       "Köztes riport.",
       "Második kör.",
-      "A munka elkészült és ellenőrzött.",
       "🟢 Készen vagyok (1 perc)",
     ]);
     expect(renderer.isFinalDeliverySuccessful()).toBe(true);
