@@ -8,6 +8,13 @@ const DEFAULT_CAVEMAN_LEVEL: CavemanLevel = "off";
 const DEFAULT_TOOL_MODE: ToolMode = "coding";
 const DEFAULT_WORKSPACE_BASE_PATH = path.join(homedir(), ".picord", "workspace");
 const DEFAULT_HOST_CHANNEL_NAME = "host";
+const DEFAULT_VOICE_TRANSCRIPTION_MODEL = "gpt-4o-transcribe";
+const SUPPORTED_VOICE_TRANSCRIPTION_MODELS = new Set([
+  "whisper-1",
+  "gpt-4o-mini-transcribe",
+  "gpt-4o-transcribe",
+  "gpt-transcribe",
+]);
 
 function normalizeStringArray(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
@@ -20,6 +27,12 @@ function normalizeStringArray(values: unknown): string[] {
 function normalizeBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") return value;
   return fallback;
+}
+
+function normalizeVoiceTranscriptionModel(value: unknown): string {
+  return typeof value === "string" && SUPPORTED_VOICE_TRANSCRIPTION_MODELS.has(value.trim())
+    ? value.trim()
+    : DEFAULT_VOICE_TRANSCRIPTION_MODEL;
 }
 
 function normalizeToolMode(value: unknown): ToolMode {
@@ -120,6 +133,7 @@ export function loadRuntimeConfig(
     ? resolvePathValue(baseDir, fileConfig.workspaceBasePath)
     : DEFAULT_WORKSPACE_BASE_PATH;
   const exaApiKey = env.PICORD_EXA_API_KEY?.trim() || fileConfig.exaApiKey?.trim();
+  const voiceTranscription = fileConfig.voiceTranscription ?? {};
 
   return {
     ...fileConfig,
@@ -160,5 +174,11 @@ export function loadRuntimeConfig(
     multiAuth: fileConfig.multiAuth && typeof fileConfig.multiAuth === "object" ? fileConfig.multiAuth : {},
     exaApiKey,
     modelOverrides: fileConfig.modelOverrides && typeof fileConfig.modelOverrides === "object" ? fileConfig.modelOverrides : {},
+    voiceTranscription: {
+      enabled: normalizeBoolean(voiceTranscription.enabled, true),
+      model: normalizeVoiceTranscriptionModel(
+        env.PICORD_VOICE_TRANSCRIPTION_MODEL?.trim() || voiceTranscription.model,
+      ),
+    },
   };
 }

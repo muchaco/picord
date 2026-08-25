@@ -1,5 +1,7 @@
 export type ApprovalDecisionMode = "once" | "always" | "deny";
 
+const ACCESS_APPROVAL_TIMEOUT_MS = 2 * 60 * 1000;
+
 export interface AccessRequestInput {
   conversationKey: string;
   workspaceKey: string;
@@ -20,6 +22,7 @@ export interface AccessRequest {
 interface PendingRequest {
   request: AccessRequest;
   resolve: (allowed: boolean) => void;
+  timeout: ReturnType<typeof setTimeout>;
 }
 
 function getOutsideWorkspaceAliases(workspaceKey: string): string[] {
@@ -106,9 +109,16 @@ export class AccessApprovalManager {
     };
 
     const promise = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Access approval timed out: ${input.summary}`));
+      }, ACCESS_APPROVAL_TIMEOUT_MS);
+
       this.pending.set(id, {
         request,
+        timeout,
         resolve: (allowed) => {
+          clearTimeout(timeout);
           if (allowed) resolve();
           else reject(new Error(`Access denied by owner: ${input.summary}`));
         },
@@ -133,6 +143,7 @@ export class AccessApprovalManager {
     if (!pending) return undefined;
 
     this.pending.delete(requestId);
+    clearTimeout(pending.timeout);
 
     if (mode === "always") {
       this.alwaysAllowed.add(pending.request.fingerprint);

@@ -236,20 +236,6 @@ export class WorkspaceGuard {
     const insideWorkspace = relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
     const displayPath = insideWorkspace ? relative || "." : targetForCheck;
 
-    if (!insideWorkspace) {
-      if (this.approvals.isOutsideWorkspaceAllowed(context.workspaceKey)) {
-        return;
-      }
-
-      await this.approvals.request({
-        conversationKey: context.conversationKey,
-        workspaceKey: context.workspaceKey,
-        fingerprint: `outside:${accessKind}:${targetForCheck}`,
-        summary: `AI wants ${accessKind} access outside the workspace: ${targetForCheck}`,
-      });
-      return;
-    }
-
     if (this.matchesBlockedPattern(displayPath)) {
       await this.approvals.request({
         conversationKey: context.conversationKey,
@@ -258,6 +244,17 @@ export class WorkspaceGuard {
         summary: `AI wants ${accessKind} access to a blocked path: ${displayPath}`,
       });
     }
+
+    if (insideWorkspace || this.approvals.isOutsideWorkspaceAllowed(context.workspaceKey)) {
+      return;
+    }
+
+    await this.approvals.request({
+      conversationKey: context.conversationKey,
+      workspaceKey: context.workspaceKey,
+      fingerprint: `outside:${accessKind}:${targetForCheck}`,
+      summary: `AI wants ${accessKind} access outside the workspace: ${targetForCheck}`,
+    });
   }
 
   private async authorizeCommand(command: string, context: AccessContext): Promise<void> {

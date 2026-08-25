@@ -1,11 +1,13 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder, type ChatInputCommandInteraction, type Message } from "discord.js";
 import { toDiscordChunks } from "./conversation.js";
 
-const FLUSH_INTERVAL_MS = 75;
-const RESPONSE_PLACEHOLDER = "_thinking…_";
+const HEARTBEAT_INTERVAL_MS = 60_000;
+const MESSAGE_OPERATION_TIMEOUT_MS = 10_000;
+const WORKING_STATUS = "🟡 Még dolgozom rajta";
 
 export type PiLiveUpdate =
   | { type: "assistant_delta"; delta: string }
+  | { type: "assistant_chunk_end" }
   | { type: "thinking_start" }
   | { type: "thinking_delta"; delta: string }
   | { type: "thinking_end" }
@@ -52,8 +54,19 @@ interface EditableMessageHandle {
 }
 
 interface LiveMessageTarget {
-  ensurePrimary: (payload: LiveMessagePayload) => Promise<EditableMessageHandle>;
-  createFollowUp: (payload: LiveMessagePayload) => Promise<EditableMessageHandle>;
+  createEditable: (payload: LiveMessagePayload) => Promise<EditableMessageHandle>;
+  createFollowUp: (payload: LiveMessagePayload) => Promise<void>;
+}
+
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function countTripleBackticks(text: string): number {
@@ -212,145 +225,122 @@ export function formatToolCall(toolName: string, args: unknown): string {
   return `\`${toolName}\``;
 }
 
-function formatFailureDetail(args: unknown): string | undefined {
-  const command = extractCommandArg(args);
-  if (!command) return undefined;
-  const singleLine = command.replace(/\s+/g, " ").trim();
-  if (!singleLine) return undefined;
-  return singleLine.length <= 140 ? singleLine : `${singleLine.slice(0, 139)}…`;
-}
-
-function formatToolLine(entry: ToolEntry): string {
-  const statusIcon = entry.status === "failed" ? "❌" : entry.status === "done" ? "✅" : "🟡";
-  return entry.status === "failed" && entry.detail
-    ? `${statusIcon} ${entry.line}\n  ↳ ${entry.detail}`
-    : `${statusIcon} ${entry.line}`;
-}
-
-async function createChannelHandle(
-  send: (payload: LiveMessagePayload) => Promise<Message>,
-  payload: LiveMessagePayload,
-): Promise<EditableMessageHandle> {
-  const message = await send(payload);
-  return {
-    edit: async (next) => {
-      await message.edit({
-        content: next.content ?? null,
-        embeds: next.embeds ?? [],
-        components: next.components ?? [],
-        allowedMentions: { parse: [] },
-      });
-    },
-  };
-}
-
 export function createChannelLiveMessageTarget(channel: {
   send: (options: { content?: string; embeds?: EmbedBuilder[]; components?: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>>; allowedMentions: { parse: [] } }) => Promise<Message>;
 }): LiveMessageTarget {
+  const send = (payload: LiveMessagePayload) => channel.send({
+    content: payload.content,
+    embeds: payload.embeds,
+    components: payload.components,
+    allowedMentions: { parse: [] },
+  });
+
   return {
-    ensurePrimary: (payload) => createChannelHandle(
-      (value) => channel.send({ content: value.content, embeds: value.embeds, components: value.components, allowedMentions: { parse: [] } }),
-      payload,
-    ),
-    createFollowUp: (payload) => createChannelHandle(
-      (value) => channel.send({ content: value.content, embeds: value.embeds, components: value.components, allowedMentions: { parse: [] } }),
-      payload,
-    ),
+    createEditable: async (payload) => {
+      const message = await send(payload);
+      return { edit: async (nextPayload) => { await message.edit(nextPayload); } };
+    },
+    createFollowUp: async (payload) => { await send(payload); },
   };
 }
 
 export function createInteractionLiveMessageTarget(interaction: ChatInputCommandInteraction, ephemeral: boolean = true): LiveMessageTarget {
-  let primaryInitialized = false;
+  const followUp = (payload: LiveMessagePayload) => interaction.followUp({
+    content: payload.content,
+    embeds: payload.embeds,
+    components: payload.components,
+    allowedMentions: { parse: [] },
+    ephemeral,
+  });
 
   return {
-    ensurePrimary: async (payload) => {
-      const request = { content: payload.content, embeds: payload.embeds, components: payload.components };
+    createEditable: async (payload) => {
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(request);
-      } else {
-        await interaction.reply({ ...request, ephemeral });
-      }
-      primaryInitialized = true;
-      return {
-        edit: async (next) => {
-          await interaction.editReply({ content: next.content, embeds: next.embeds, components: next.components });
-        },
-      };
-    },
-    createFollowUp: async (payload) => {
-      if (!primaryInitialized && !(interaction.deferred || interaction.replied)) {
-        await interaction.reply({ content: payload.content, embeds: payload.embeds, components: payload.components, ephemeral });
-        primaryInitialized = true;
-        return {
-          edit: async (next) => {
-            await interaction.editReply({ content: next.content, embeds: next.embeds, components: next.components });
-          },
-        };
+        const message = await followUp(payload);
+        return { edit: async (nextPayload) => { await message.edit(nextPayload); } };
       }
 
-      const message = await interaction.followUp({
-        content: payload.content,
-        embeds: payload.embeds,
-        components: payload.components,
-        allowedMentions: { parse: [] },
-        ephemeral: true,
-        fetchReply: true,
-      });
-      if (!("edit" in message)) {
-        return { edit: async () => undefined };
-      }
-      return {
-        edit: async (next) => {
-          await message.edit({
-            content: next.content ?? null,
-            embeds: next.embeds ?? [],
-            components: next.components ?? [],
-            allowedMentions: { parse: [] },
-          });
-        },
-      };
+      await interaction.reply({ ...payload, ephemeral });
+      return { edit: async (nextPayload) => { await interaction.editReply(nextPayload); } };
     },
+    createFollowUp: async (payload) => { await followUp(payload); },
   };
 }
 
 export class LiveDiscordRunRenderer {
   private readonly tools = new Map<string, ToolEntry>();
   private readonly timeline: TimelineEntry[] = [];
-  private readonly handles: EditableMessageHandle[] = [];
   private activeAssistantEntry?: AssistantEntry;
   private activeThinkingEntry?: ThinkingEntry;
   private thinkingActive = false;
   private thinkingVisible: boolean;
-  private flushTimer?: NodeJS.Timeout;
-  private flushPromise: Promise<void> = Promise.resolve();
   private finalized = false;
-  private sawAssistantDelta = false;
-  private skillLabel?: string;
-  private skillDetails?: string;
+  private finalDeliverySuccessful = false;
   private runModelReference?: string;
   private runThinkingLevel?: string;
   private runSupportsThinking?: boolean;
   private runContextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
-  private accessRequest?: { content: string; requestId?: string; handle?: EditableMessageHandle };
 
-  private initialPlaceholderSent = false;
+  private activeStatusMessage?: EditableMessageHandle;
+  private readonly startedAt = Date.now();
+  private statusTimer?: NodeJS.Timeout;
+  private readonly operationTimeoutMs: number;
+  private readonly heartbeatIntervalMs: number;
 
-  constructor(private readonly target: LiveMessageTarget, options?: { thinkingVisible?: boolean }) {
+  constructor(
+    private readonly target: LiveMessageTarget,
+    options?: { thinkingVisible?: boolean; operationTimeoutMs?: number; heartbeatIntervalMs?: number },
+  ) {
     this.thinkingVisible = options?.thinkingVisible ?? false;
+    this.operationTimeoutMs = options?.operationTimeoutMs ?? MESSAGE_OPERATION_TIMEOUT_MS;
+    this.heartbeatIntervalMs = options?.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
+    if (this.operationTimeoutMs <= 0) {
+      throw new Error("Discord message operation timeout must be positive");
+    }
+    if (this.heartbeatIntervalMs <= 0) {
+      throw new Error("Discord heartbeat interval must be positive");
+    }
   }
 
-  /** Show immediate placeholder message before any content arrives. */
+  isFinalDeliverySuccessful(): boolean {
+    return this.finalDeliverySuccessful;
+  }
+
+  /** Create the single live report before any assistant content arrives. */
   async showThinkingPlaceholder(): Promise<void> {
-    if (this.initialPlaceholderSent || this.finalized) return;
-    this.initialPlaceholderSent = true;
-    const payload: LiveMessagePayload = { content: RESPONSE_PLACEHOLDER };
-    const handle = await this.target.ensurePrimary(payload);
-    this.handles.push(handle);
+    if (this.activeStatusMessage || this.finalized) return;
+    await this.createWorkingStatus();
+    this.scheduleStatusUpdate();
   }
 
-  setSkillContext(skillName: string, args?: string): void {
-    this.skillLabel = skillName;
-    this.skillDetails = args?.trim() ? args.trim() : undefined;
+  private scheduleStatusUpdate(): void {
+    if (this.statusTimer || this.finalized) return;
+    this.statusTimer = setTimeout(() => {
+      this.statusTimer = undefined;
+      void this.updateStatusMessage();
+    }, this.heartbeatIntervalMs);
+  }
+
+  private async updateStatusMessage(): Promise<void> {
+    if (this.finalized) return;
+
+    try {
+      if (!this.activeStatusMessage) {
+        throw new Error("Heartbeat cannot update a missing working status message");
+      }
+      await withTimeout(
+        this.activeStatusMessage.edit({ content: this.workingStatus() }),
+        this.operationTimeoutMs,
+        "Discord working status edit",
+      );
+    } catch (error) {
+      console.error("[picord] Status update failed:", error);
+    }
+    this.scheduleStatusUpdate();
+  }
+
+  setSkillContext(_skillName: string, _args?: string): void {
+    // Skill selection is internal runtime metadata, not user-facing progress.
   }
 
   async showAccessRequest(content: string, requestId?: string): Promise<void> {
@@ -375,14 +365,7 @@ export class LiveDiscordRunRenderer {
         : [],
     };
 
-    if (!this.accessRequest?.handle) {
-      const handle = await this.target.createFollowUp(payload);
-      this.accessRequest = { content, requestId, handle };
-      return;
-    }
-
-    await this.accessRequest.handle.edit(payload);
-    this.accessRequest = { ...this.accessRequest, content, requestId };
+    await this.target.createFollowUp(payload);
   }
 
   async onUpdate(update: PiLiveUpdate): Promise<void> {
@@ -393,16 +376,27 @@ export class LiveDiscordRunRenderer {
       this.runThinkingLevel = update.thinkingLevel ?? this.runThinkingLevel;
       this.runSupportsThinking = update.supportsThinking ?? this.runSupportsThinking;
       this.runContextUsage = update.contextUsage ?? this.runContextUsage;
-      this.scheduleFlush();
       return;
     }
 
     if (update.type === "assistant_delta") {
       if (!update.delta) return;
-      this.sawAssistantDelta = true;
       this.activeAssistantEntry ??= this.createAssistantEntry();
       this.activeAssistantEntry.text += update.delta;
-      this.scheduleFlush();
+      return;
+    }
+
+    if (update.type === "assistant_chunk_end") {
+      if (!this.activeAssistantEntry) {
+        throw new Error("Assistant chunk ended without assistant text");
+      }
+      if (!this.activeAssistantEntry.text.trim()) {
+        throw new Error("Assistant chunk ended with empty assistant text");
+      }
+      const completedChunk = this.activeAssistantEntry.text;
+      this.activeAssistantEntry = undefined;
+      await this.replaceStatusWithReport(completedChunk);
+      await this.createWorkingStatus();
       return;
     }
 
@@ -412,7 +406,6 @@ export class LiveDiscordRunRenderer {
         this.activeThinkingEntry = { kind: "thinking", text: "" };
         this.timeline.push(this.activeThinkingEntry);
       }
-      this.scheduleFlush();
       return;
     }
 
@@ -421,20 +414,18 @@ export class LiveDiscordRunRenderer {
       if (this.thinkingVisible && this.activeThinkingEntry) {
         this.activeThinkingEntry.text += update.delta;
       }
-      this.scheduleFlush();
       return;
     }
 
     if (update.type === "thinking_end") {
       this.thinkingActive = false;
       this.activeThinkingEntry = undefined;
-      this.scheduleFlush();
       return;
     }
 
+    // Tool activity is operational detail. Keep it out of the user-facing
+    // transcript; failures still reach Discord through the final response.
     if (update.type === "tool_start") {
-      if (this.tools.has(update.toolCallId)) return;
-      this.activeAssistantEntry = undefined;
       const tool: ToolEntry = {
         callId: update.toolCallId,
         toolName: update.toolName,
@@ -443,38 +434,27 @@ export class LiveDiscordRunRenderer {
         args: update.args,
       };
       this.tools.set(update.toolCallId, tool);
-      this.timeline.push({ kind: "tool", tool });
-      this.scheduleFlush();
       return;
     }
 
     if (update.type === "tool_update") {
-      const entry = this.tools.get(update.toolCallId);
-      if (!entry) return;
-      if (typeof update.args !== "undefined") {
-        entry.args = update.args;
-        entry.line = formatToolCall(update.toolName, update.args);
+      const tool = this.tools.get(update.toolCallId);
+      if (!tool) return;
+      if (update.args !== undefined) {
+        tool.args = update.args;
+        tool.line = formatToolCall(update.toolName, update.args);
       }
-      if (typeof update.detail !== "undefined") {
-        entry.outputDetail = update.detail;
-      }
-      this.scheduleFlush();
       return;
     }
 
     if (update.type === "tool_end") {
-      const entry = this.tools.get(update.toolCallId);
-      if (!entry) return;
-      if (typeof update.args !== "undefined") {
-        entry.args = update.args;
-        entry.line = formatToolCall(update.toolName, update.args);
-      }
-      if (typeof update.detail !== "undefined") {
-        entry.outputDetail = update.detail;
-      }
-      entry.status = update.isError ? "failed" : "done";
-      entry.detail = update.isError ? formatFailureDetail(update.detail ?? update.args) : undefined;
-      this.scheduleFlush();
+      const tool = this.tools.get(update.toolCallId);
+      if (!tool) return;
+      tool.status = update.isError ? "failed" : "done";
+      tool.detail = typeof update.detail === "string"
+        ? summarizeValue(update.detail, 160)
+        : undefined;
+      return;
     }
   }
 
@@ -486,45 +466,36 @@ export class LiveDiscordRunRenderer {
    */
   async sealCurrentMessages(): Promise<void> {
     if (this.finalized) return;
-
-    // Cancel any pending timer and do one final flush
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = undefined;
+    if (this.activeAssistantEntry?.text.trim()) {
+      const partialChunk = this.activeAssistantEntry.text;
+      this.activeAssistantEntry = undefined;
+      await this.replaceStatusWithReport(partialChunk);
+      await this.createWorkingStatus();
     }
-    await this.flush();
 
-    // Stop editing the current handles — they're sealed.
-    // Next flush will create new follow-up messages.
-    this.handles.length = 0;
-
-    // Reset timeline for the continuation phase
     this.timeline.length = 0;
     this.activeAssistantEntry = undefined;
     this.activeThinkingEntry = undefined;
     this.tools.clear();
-    this.sawAssistantDelta = false;
   }
 
   async finalize(finalResponse: string): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
+    this.thinkingActive = false;
 
-    if (!this.sawAssistantDelta) {
-      this.activeAssistantEntry ??= this.createAssistantEntry();
-      this.activeAssistantEntry.text += finalResponse || "Done.";
+    if (this.statusTimer) {
+      clearTimeout(this.statusTimer);
+      this.statusTimer = undefined;
     }
 
-    for (const entry of this.tools.values()) {
-      if (entry.status === "running") entry.status = "done";
-    }
-
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = undefined;
-    }
-
-    await this.flush();
+    await this.replaceStatusWithReport(finalResponse || "Done.");
+    await withTimeout(
+      this.target.createFollowUp({ content: this.completedStatus() }),
+      this.operationTimeoutMs,
+      "Discord completion notification creation",
+    );
+    this.finalDeliverySuccessful = true;
   }
 
   private createAssistantEntry(): AssistantEntry {
@@ -533,92 +504,55 @@ export class LiveDiscordRunRenderer {
     return entry;
   }
 
-  private scheduleFlush() {
-    if (this.flushTimer) return;
-    this.flushTimer = setTimeout(() => {
-      this.flushTimer = undefined;
-      void this.flush();
-    }, FLUSH_INTERVAL_MS);
+  private elapsedMinutes(): number {
+    return Math.max(1, Math.floor((Date.now() - this.startedAt) / 60_000));
   }
 
-  private buildTranscript(): string {
-    const lines: string[] = [];
-
-    if (this.skillLabel) {
-      lines.push(`🧠 skill \`${this.skillLabel}\``);
-      if (this.skillDetails) {
-        lines.push(this.skillDetails);
-      }
-      lines.push("");
-    }
-
-    for (const entry of this.timeline) {
-      if (entry.kind === "assistant") {
-        const text = entry.text.trim();
-        if (!text) continue;
-        lines.push(text, "");
-        continue;
-      }
-
-      if (entry.kind === "thinking") {
-        const text = entry.text.trim();
-        if (!text) continue;
-        lines.push(`🧠 Thinking:\n${text}`, "");
-        continue;
-      }
-
-      if (entry.kind === "tool") {
-        lines.push(formatToolLine(entry.tool), "");
-        continue;
-      }
-    }
-
-    // Show thinking placeholder when thinking is active but hidden
-    if (this.thinkingActive && !this.thinkingVisible) {
-      lines.push("🧠 Thinking...", "");
-    }
-
-    const contextLine = this.runContextUsage
-      ? this.runContextUsage.tokens === null
-        ? `- Context: estimating / ${this.runContextUsage.contextWindow.toLocaleString()}`
-        : `- Context: ${this.runContextUsage.tokens.toLocaleString()} / ${this.runContextUsage.contextWindow.toLocaleString()} (${(this.runContextUsage.percent ?? 0).toFixed(1)}%)`
-      : undefined;
-
-    const metadata = [
-      this.runModelReference ? `- Model: ${this.runModelReference}` : undefined,
-      this.runThinkingLevel && (this.runThinkingLevel !== "off" || this.runSupportsThinking === true)
-        ? `- Thinking: ${this.runThinkingLevel === "off" ? "none" : this.runThinkingLevel}`
-        : undefined,
-      contextLine,
-    ].filter((line): line is string => Boolean(line));
-
-    if (metadata.length > 0) {
-      lines.push(metadata.join("\n"));
-    }
-
-    const rendered = lines.join("\n").trim();
-    return rendered || RESPONSE_PLACEHOLDER;
+  private workingStatus(): string {
+    return `${WORKING_STATUS}… (${this.elapsedMinutes()} perc)`;
   }
 
-  private async flush(): Promise<void> {
-    this.flushPromise = this.flushPromise.then(async () => {
-      const rendered = normalizeDiscordText(this.buildTranscript());
-      const chunks = chunkDiscordMarkdown(rendered);
+  private completedStatus(): string {
+    return `🟢 Készen vagyok (${this.elapsedMinutes()} perc)`;
+  }
 
-      for (let index = 0; index < chunks.length; index++) {
-        const payload: LiveMessagePayload = { content: chunks[index] || "Done." };
-        const existing = this.handles[index];
-        if (existing) {
-          await existing.edit(payload);
-          continue;
-        }
-        const handle = index === 0
-          ? await this.target.ensurePrimary(payload)
-          : await this.target.createFollowUp(payload);
-        this.handles.push(handle);
+  private async createWorkingStatus(): Promise<void> {
+    if (this.activeStatusMessage) {
+      throw new Error("Cannot create a second working status message");
+    }
+    this.activeStatusMessage = await withTimeout(
+      this.target.createEditable({ content: this.workingStatus() }),
+      this.operationTimeoutMs,
+      "Discord working status creation",
+    );
+  }
+
+  private async replaceStatusWithReport(report: string): Promise<void> {
+    const chunks = chunkDiscordMarkdown(normalizeDiscordText(report));
+    const statusMessage = this.activeStatusMessage;
+    if (!statusMessage) {
+      for (const chunk of chunks) {
+        await withTimeout(
+          this.target.createFollowUp({ content: chunk }),
+          this.operationTimeoutMs,
+          "Discord report fallback creation",
+        );
       }
-    });
+      return;
+    }
 
-    await this.flushPromise;
+    await withTimeout(
+      statusMessage.edit({ content: chunks[0] }),
+      this.operationTimeoutMs,
+      "Discord status-to-report edit",
+    );
+    this.activeStatusMessage = undefined;
+    for (const chunk of chunks.slice(1)) {
+      await withTimeout(
+        this.target.createFollowUp({ content: chunk }),
+        this.operationTimeoutMs,
+        "Discord report continuation creation",
+      );
+    }
   }
 }

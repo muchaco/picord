@@ -1,7 +1,7 @@
 import { ChannelType, type Client, type Guild, type Message, type TextChannel, type ThreadChannel, type User } from "discord.js";
 import fs from "node:fs";
 import path from "node:path";
-import { buildPromptFromMessage } from "./message-helpers.js";
+import { buildPromptFromDiscordMessage } from "./message-helpers.js";
 import type { ModelSummary } from "../types.js";
 import type { DiscordPortRuntimeAdapter, DiscordPortThreadBinding, PiAvailableSessionSummary } from "./types.js";
 import { addExistingProject, createNewProject, postProjectCreatedMessage } from "./project-management.js";
@@ -158,18 +158,23 @@ export class DiscordPortRuntime {
 
   async continueThread({ thread, message }: { thread: ThreadChannel; message: Message }): Promise<string> {
     const binding = this.bindThread(thread);
-    const basePrompt = buildPromptFromMessage(message, message.content.trim());
+    const basePrompt = await buildPromptFromDiscordMessage(
+      message,
+      message.content.trim(),
+      this.adapter.config,
+    );
     return this.adapter.respond({
       conversationKey: binding.conversationKey,
       workspaceKey: binding.workspaceKey,
       sessionName: binding.sessionName,
       promptText: [
-        basePrompt,
+        basePrompt.text,
         "",
         `[Session thread context]`,
         `ThreadId: ${thread.id}`,
         `WorkspaceChannel: ${thread.parentId ?? "unknown"}`,
       ].join("\n"),
+      promptContent: basePrompt.content,
     });
   }
 

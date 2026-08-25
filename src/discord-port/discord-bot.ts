@@ -13,7 +13,7 @@ import {
   createChannelLiveMessageTarget,
 } from "../live-discord-renderer.js";
 import { canAccessDiscordMessage } from "./access-control.js";
-import { buildPromptFromMessage, replyToMessage } from "./message-helpers.js";
+import { buildPromptFromDiscordMessage, replyToMessage } from "./message-helpers.js";
 import { registerDiscordPortInteractionHandler } from "./interaction-handler.js";
 import { DiscordPortRuntime } from "./runtime.js";
 import type { DiscordPortRuntimeAdapter } from "./types.js";
@@ -69,12 +69,21 @@ function isProjectTextChannel(
   );
 }
 
-function buildAutoThreadName(message: Message): string {
-  const normalized = message.content
+const EMPTY_THREAD_NAME = "picord session";
+
+function getMessagePrompt(message: Message): string {
+  return message.content
     .replace(/<@!?(\d+)>/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  return (normalized || "picord session").slice(0, 80);
+}
+
+function buildAutoThreadName(message: Message): string {
+  return (getMessagePrompt(message) || EMPTY_THREAD_NAME).slice(0, 80);
+}
+
+function isPromptlessMention(message: Message): boolean {
+  return getMessagePrompt(message).length === 0 && message.attachments.size === 0;
 }
 
 function isHostControlChannel(
@@ -94,6 +103,37 @@ function isHostControlChannel(
     message.channel.name.toLowerCase() ===
       runtime.adapter.config.hostChannelName
   );
+}
+
+export async function steerActiveDiscordRun(
+  adapter: DiscordPortRuntimeAdapter,
+  conversationKey: string,
+  promptText: string,
+  promptContent?: import("../types.js").PromptImageContent[],
+): Promise<boolean> {
+  if (!adapter.isStreaming(conversationKey)) {
+    return false;
+  }
+
+  const steered = promptContent?.length
+    ? await adapter.steer(conversationKey, promptText, promptContent)
+    : await adapter.steer(conversationKey, promptText);
+  if (!steered) {
+    throw new Error(
+      `Streaming conversation has no steerable session: ${conversationKey}`,
+    );
+  }
+  return true;
+}
+
+export async function registerReadyLiveRenderer(
+  adapter: DiscordPortRuntimeAdapter,
+  conversationKey: string,
+  renderer: LiveDiscordRunRenderer,
+  runId?: number,
+): Promise<void> {
+  await renderer.showThinkingPlaceholder();
+  adapter.registerLiveRenderer(conversationKey, renderer, runId);
 }
 
 export function createDiscordPortClient(
@@ -184,11 +224,17 @@ export function registerDiscordPortBot({
         if (!message.inGuild()) {
           const conversationKey = `discord:dm:${message.channelId}`;
 
-          // Always abort first to clear any stuck state, then respond.
-          await runtime.adapter.sealLiveRenderer(conversationKey);
-          runtime.adapter.clearLiveRenderer(conversationKey);
-          await runtime.adapter.abort(conversationKey).catch(() => false);
-          await runtime.adapter.waitForRespondDone(conversationKey);
+          const messagePrompt = await buildPromptFromDiscordMessage(message, promptText, runtime.adapter.config);
+          if (
+            await steerActiveDiscordRun(
+              runtime.adapter,
+              conversationKey,
+              messagePrompt.text,
+              messagePrompt.content,
+            )
+          ) {
+            return;
+          }
 
 
 
@@ -210,9 +256,8 @@ export function registerDiscordPortBot({
             createChannelLiveMessageTarget(message.channel),
             { thinkingVisible },
           );
-      // Show placeholder immediately for perceived responsiveness.
-      await renderer.showThinkingPlaceholder().catch(() => undefined);
-          runtime.adapter.registerLiveRenderer(
+          await registerReadyLiveRenderer(
+            runtime.adapter,
             conversationKey,
             renderer,
             runId,
@@ -222,7 +267,8 @@ export function registerDiscordPortBot({
               conversationKey,
               workspaceKey: `discord:dm:${message.channelId}`,
               sessionName: `dm-${message.author.username}`,
-              promptText: buildPromptFromMessage(message, promptText),
+              promptText: messagePrompt.text,
+              promptContent: messagePrompt.content,
               runId,
             });
             if (!isLatestRun(conversationKey, runId)) {
@@ -256,21 +302,22 @@ export function registerDiscordPortBot({
           if (thread.archived) {
             await thread.setArchived(false).catch(() => undefined);
           }
+          if (thread.name === EMPTY_THREAD_NAME && !isPromptlessMention(message)) {
+            await thread.setName(buildAutoThreadName(message)).catch(() => undefined);
+          }
+
           const binding = runtime.bindThread(thread);
 
-          if (runtime.adapter.isStreaming(binding.conversationKey)) {
-            // Seal old renderer so its message stops updating, then abort
-            // the agent and wait for old respond() to fully exit before
-            // starting a new one. This ensures the new bot message appears
-            // BELOW the user's message, not above it.
-            await runtime.adapter.sealLiveRenderer(binding.conversationKey);
-            runtime.adapter.clearLiveRenderer(binding.conversationKey);
-            await runtime.adapter
-              .abort(binding.conversationKey)
-              .catch(() => false);
-            await runtime.adapter.waitForRespondDone(
+          const messagePrompt = await buildPromptFromDiscordMessage(message, promptText, runtime.adapter.config);
+          if (
+            await steerActiveDiscordRun(
+              runtime.adapter,
               binding.conversationKey,
-            );
+              messagePrompt.text,
+              messagePrompt.content,
+            )
+          ) {
+            return;
           }
 
           if ("sendTyping" in message.channel) {
@@ -283,7 +330,8 @@ export function registerDiscordPortBot({
             createChannelLiveMessageTarget(thread),
             { thinkingVisible },
           );
-          runtime.adapter.registerLiveRenderer(
+          await registerReadyLiveRenderer(
+            runtime.adapter,
             binding.conversationKey,
             renderer,
             runId,
@@ -293,7 +341,8 @@ export function registerDiscordPortBot({
               conversationKey: binding.conversationKey,
               workspaceKey: binding.workspaceKey,
               sessionName: binding.sessionName,
-              promptText: buildPromptFromMessage(message, promptText),
+              promptText: messagePrompt.text,
+              promptContent: messagePrompt.content,
               runId,
             });
             if (!isLatestRun(binding.conversationKey, runId)) {
@@ -334,6 +383,13 @@ export function registerDiscordPortBot({
         });
         await thread.members.add(message.author.id).catch(() => undefined);
 
+        if (isPromptlessMention(message)) {
+          await thread.send(
+            "Thread ready. Set the model/thinking level here first, then send your task.",
+          );
+          return;
+        }
+
         await thread.sendTyping().catch(() => undefined);
 
         const binding = runtime.bindThread(thread);
@@ -343,26 +399,30 @@ export function registerDiscordPortBot({
           createChannelLiveMessageTarget(thread),
           { thinkingVisible },
         );
-        // Show placeholder immediately so user sees feedback while
-        // workspace loads + session initializes (1-3s cold start).
-        await renderer.showThinkingPlaceholder().catch(() => undefined);
-        runtime.adapter.registerLiveRenderer(
+        await registerReadyLiveRenderer(
+          runtime.adapter,
           binding.conversationKey,
           renderer,
           runId,
         );
         try {
+          const initialPrompt = await buildPromptFromDiscordMessage(
+            message,
+            promptText,
+            runtime.adapter.config,
+          );
           const response = await runtime.adapter.respond({
             conversationKey: binding.conversationKey,
             workspaceKey: binding.workspaceKey,
             sessionName: binding.sessionName,
             promptText: [
-              buildPromptFromMessage(message, promptText),
+              initialPrompt.text,
               "",
               `[Session thread context]`,
               `ThreadId: ${thread.id}`,
               `WorkspaceChannel: ${thread.parentId ?? "unknown"}`,
             ].join("\n"),
+            promptContent: initialPrompt.content,
             runId,
           });
           if (!isLatestRun(binding.conversationKey, runId)) {

@@ -605,6 +605,14 @@ async function checkInteractionAccess(
       });
 }
 
+export async function abortAndResetSession(
+  adapter: Pick<DiscordPortRuntime["adapter"], "abort" | "reset">,
+  conversationKey: string,
+): Promise<void> {
+  await adapter.abort(conversationKey).catch(() => false);
+  await adapter.reset(conversationKey);
+}
+
 export function registerDiscordPortInteractionHandler({
   client,
   runtime,
@@ -2118,8 +2126,10 @@ export function registerDiscordPortInteractionHandler({
         requireGuild(interaction);
         const thread = requireThread(interaction);
         const binding = runtime.bindThread(thread);
-        await runtime.adapter.abort(binding.conversationKey).catch(() => false);
-        await runtime.adapter.reset(binding.conversationKey);
+        await abortAndResetSession(
+          runtime.adapter,
+          binding.conversationKey,
+        );
         await interaction.reply({
           content:
             "This thread session was refreshed. Send your next message again to start a clean session.",

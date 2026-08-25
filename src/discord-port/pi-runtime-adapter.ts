@@ -3,14 +3,26 @@ import path from "node:path";
 import { homedir } from "node:os";
 import type { ApprovalDecisionMode } from "../access-approval.js";
 import type { LiveDiscordRunRenderer } from "../live-discord-renderer.js";
-import { writeRestartNotification } from "../restart-notification.js";
+import {
+  acknowledgeRestartRecoveries,
+  enqueueRestartRecoveries,
+  writeRestartNotification,
+} from "../restart-notification.js";
 
 interface RegisteredLiveRenderer {
   renderer: LiveDiscordRunRenderer;
   runId?: number;
 }
+
+function getChannelIdFromConversationKey(conversationKey: string): string | undefined {
+  const dmMatch = /^discord:dm:(.+)$/.exec(conversationKey);
+  if (dmMatch) return dmMatch[1];
+
+  const guildMatch = /^discord:guild:[^:]+:(thread|channel):(.+)$/.exec(conversationKey);
+  return guildMatch?.[2];
+}
 import type { PiSessionPool } from "../pi-session.js";
-import type { CavemanLevel, ModelSummary, PicordRuntimeConfig, SkillSummary, ThinkingLevel } from "../types.js";
+import type { CavemanLevel, ModelSummary, PicordRuntimeConfig, PromptImageContent, SkillSummary, ThinkingLevel } from "../types.js";
 import type {
   DiscordPortRuntimeAdapter,
   LoginProviderOption,
@@ -161,6 +173,13 @@ export class PiSessionPoolAdapter implements DiscordPortRuntimeAdapter {
 
   registerLiveRenderer(conversationKey: string, renderer: LiveDiscordRunRenderer, runId?: number): void {
     this.liveRenderers.set(conversationKey, { renderer, runId });
+    const channelId = getChannelIdFromConversationKey(conversationKey);
+    if (!channelId) {
+      throw new Error(`Cannot recover a Discord run with invalid conversation key: ${conversationKey}`);
+    }
+    enqueueRestartRecoveries(this.config.statePath, [
+      { channelId, conversationKey, interruptedAt: new Date().toISOString() },
+    ]);
   }
 
   async sealLiveRenderer(conversationKey: string): Promise<void> {
@@ -174,6 +193,9 @@ export class PiSessionPoolAdapter implements DiscordPortRuntimeAdapter {
     if (!current) return;
     if (renderer && current.renderer !== renderer) return;
     this.liveRenderers.delete(conversationKey);
+    if (current.renderer.isFinalDeliverySuccessful()) {
+      acknowledgeRestartRecoveries(this.config.statePath, [conversationKey]);
+    }
   }
 
   listSkillSummaries(): SkillSummary[] {
@@ -190,12 +212,14 @@ export class PiSessionPoolAdapter implements DiscordPortRuntimeAdapter {
       });
     }
 
+    const configuredCommand = process.env.PICORD_RESTART_COMMAND?.trim();
     const home = homedir();
     const startScript = path.join(home, ".picord", "picord-start.sh");
     const syncScript = path.join(home, ".picord", "picord-sync.sh");
     const logFile = path.join(home, ".picord", "picord-restart.log");
-    const command = `sleep 2; tmux kill-session -t picord 2>/dev/null || true; ${syncScript} >> ${logFile} 2>&1; tmux new-session -d -s picord '${startScript}'`;
-    const child = spawn("bash", ["-lc", `nohup bash -lc ${JSON.stringify(command)} >> ${JSON.stringify(logFile)} 2>&1 &`], {
+    const fallbackCommand = `tmux kill-session -t picord 2>/dev/null || true; ${syncScript} >> ${logFile} 2>&1; tmux new-session -d -s picord '${startScript}'`;
+    const command = configuredCommand || fallbackCommand;
+    const child = spawn("bash", ["-lc", `sleep 2; ${command}`], {
       detached: true,
       stdio: "ignore",
       cwd: this.config.cwd,
@@ -227,8 +251,14 @@ export class PiSessionPoolAdapter implements DiscordPortRuntimeAdapter {
     return this.sessionPool.isStreaming(conversationKey);
   }
 
-  steer(conversationKey: string, text: string): Promise<boolean> {
-    return this.sessionPool.steer(conversationKey, text);
+  steer(
+    conversationKey: string,
+    text: string,
+    promptContent?: PromptImageContent[],
+  ): Promise<boolean> {
+    return promptContent?.length
+      ? this.sessionPool.steer(conversationKey, text, promptContent)
+      : this.sessionPool.steer(conversationKey, text);
   }
 
   waitForRespondDone(conversationKey: string): Promise<void> {
@@ -255,6 +285,14 @@ export class PiSessionPoolAdapter implements DiscordPortRuntimeAdapter {
 
   setAutoCompactionEnabled(conversationKey: string, enabled: boolean): void {
     return this.sessionPool.setAutoCompactionEnabled(conversationKey, enabled);
+  }
+
+  async reconnectSession(options: {
+    conversationKey: string;
+    workspaceKey: string;
+    sessionName: string;
+  }): Promise<PiBoundSessionSummary> {
+    return this.sessionPool.reconnectSession(options);
   }
 
   async resumeSession(options: {
@@ -301,16 +339,17 @@ export class PiSessionPoolAdapter implements DiscordPortRuntimeAdapter {
     throw new Error(summary);
   }
 
-  respond(options: {
+  async respond(options: {
     conversationKey: string;
     workspaceKey: string;
     sessionName: string;
     promptText: string;
+    promptContent?: PromptImageContent[];
     runId?: number;
   }): Promise<string> {
     return this.withRetry(
       () => this.sessionPool.respond(options),
-      "respond"
+      "respond",
     ).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`respond failed: ${message}`);

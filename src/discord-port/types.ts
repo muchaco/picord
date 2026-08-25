@@ -1,7 +1,7 @@
 import type { Guild, Message, ThreadChannel } from "discord.js";
 import type { AccessRequest, ApprovalDecisionMode } from "../access-approval.js";
 import type { LiveDiscordRunRenderer } from "../live-discord-renderer.js";
-import type { CavemanLevel, ModelSummary, PicordRuntimeConfig, SkillSummary, ThinkingLevel, WorkspaceInfo, WorkspaceModelScopeResult } from "../types.js";
+import type { CavemanLevel, ModelSummary, PicordRuntimeConfig, PromptImageContent, SkillSummary, ThinkingLevel, WorkspaceInfo, WorkspaceModelScopeResult } from "../types.js";
 
 export interface ManagedProjectRecord {
   channelId: string;
@@ -92,6 +92,7 @@ export interface DiscordPortRuntimeAdapter {
     workspaceKey: string;
     sessionName: string;
     promptText: string;
+    promptContent?: PromptImageContent[];
     runId?: number;
   }): Promise<string>;
   invokeSkill(options: {
@@ -108,7 +109,7 @@ export interface DiscordPortRuntimeAdapter {
   setOutsideWorkspaceAllowed(workspaceKey: string, allowed: boolean): void;
   resolveAccessRequest(requestId: string, mode: ApprovalDecisionMode): AccessRequest | undefined;
   isStreaming(conversationKey: string): boolean;
-  steer(conversationKey: string, text: string): Promise<boolean>;
+  steer(conversationKey: string, text: string, promptContent?: PromptImageContent[]): Promise<boolean>;
   abort(conversationKey: string): Promise<boolean>;
   waitForRespondDone(conversationKey: string): Promise<void>;
   reset(conversationKey: string): Promise<boolean>;
@@ -116,6 +117,11 @@ export interface DiscordPortRuntimeAdapter {
   compactSession(conversationKey: string, instructions?: string): Promise<boolean>;
   getAutoCompactionEnabled(conversationKey: string): boolean;
   setAutoCompactionEnabled(conversationKey: string, enabled: boolean): void;
+  reconnectSession(options: {
+    conversationKey: string;
+    workspaceKey: string;
+    sessionName: string;
+  }): Promise<PiBoundSessionSummary>;
   resumeSession(options: {
     conversationKey: string;
     workspaceKey: string;
