@@ -1,174 +1,169 @@
-import { describe, expect, it } from "vitest";
-import { LiveDiscordRunRenderer, chunkDiscordMarkdown, formatToolCall, normalizeDiscordText, type LiveMessagePayload } from "./live-discord-renderer.js";
+import { describe, expect, test } from "vitest";
+import { LiveDiscordRunRenderer, type LiveMessagePayload } from "./live-discord-renderer.js";
 
-describe("live discord renderer helpers", () => {
-  it("normalizes markdown headings and bullets outside code blocks", () => {
-    const input = "## Summary\n- one\n* two\n\n```ts\n# keep\n- keep\n```";
-    expect(normalizeDiscordText(input)).toBe("**Summary**\n• one\n• two\n\n```ts\n# keep\n- keep\n```");
+function createRecordingTarget() {
+  const messages: string[] = [];
+  const edits: string[] = [];
+  const content = (payload: LiveMessagePayload) => payload.content ?? "";
+
+  return {
+    messages,
+    edits,
+    target: {
+      createEditable: async (payload: LiveMessagePayload) => {
+        const index = messages.push(content(payload)) - 1;
+        return {
+          edit: async (nextPayload: LiveMessagePayload) => {
+            messages[index] = content(nextPayload);
+            edits.push(content(nextPayload));
+          },
+        };
+      },
+      createFollowUp: async (payload: LiveMessagePayload) => {
+        messages.push(content(payload));
+      },
+    },
+  };
+}
+
+describe("Discord live report rendering", () => {
+  test("the initial live message says that work is in progress", async () => {
+    const recording = createRecordingTarget();
+    const renderer = new LiveDiscordRunRenderer(recording.target);
+
+    await renderer.showThinkingPlaceholder();
+
+    expect(recording.messages).toEqual(["🟡 Még dolgozom rajta… (1 perc)"]);
   });
 
-  it("preserves code fences across chunk boundaries", () => {
-    const chunks = chunkDiscordMarkdown("```ts\nconst value = 1;\nconst other = 2;\n```", 18);
-    expect(chunks.length).toBeGreaterThan(1);
-    for (const chunk of chunks) {
-      expect((chunk.match(/```/g) ?? []).length % 2).toBe(0);
-    }
-    expect(chunks[0]).toContain("```ts");
-    expect(chunks[1]).toContain("```");
+  test("text deltas remain hidden until their assistant chunk ends", async () => {
+    const recording = createRecordingTarget();
+    const renderer = new LiveDiscordRunRenderer(recording.target);
+    await renderer.showThinkingPlaceholder();
+
+    await renderer.onUpdate({ type: "assistant_delta", delta: "A feltárás kész; " });
+    await renderer.onUpdate({ type: "assistant_delta", delta: "most jön az implementáció." });
+
+    expect(recording.messages).toEqual(["🟡 Még dolgozom rajta… (1 perc)"]);
+
+    await renderer.onUpdate({ type: "assistant_chunk_end" });
+
+    expect(recording.messages).toEqual([
+      "A feltárás kész; most jön az implementáció.",
+      "🟡 Még dolgozom rajta… (1 perc)",
+    ]);
   });
 
-  it("formats compact tool status lines", () => {
-    expect(formatToolCall("read", { path: "src/index.ts" })).toBe("`read` `src/index.ts`");
-    expect(formatToolCall("bash", { command: "cd repo && npm test" })).toBe("`bash` `cd repo && npm test`");
-    expect(formatToolCall("bash", { cwd: "/repo", command: "npm test" })).toBe("`bash` `/repo · npm test`");
-    expect(formatToolCall("grep", { path: "src", pattern: "openai" })).toBe("`grep` `src openai`");
+  test("each completed assistant chunk replaces the current status and creates a new status", async () => {
+    const recording = createRecordingTarget();
+    const renderer = new LiveDiscordRunRenderer(recording.target);
+    await renderer.showThinkingPlaceholder();
+
+    await renderer.onUpdate({ type: "assistant_delta", delta: "Első update." });
+    await renderer.onUpdate({ type: "assistant_chunk_end" });
+    await renderer.onUpdate({ type: "assistant_delta", delta: "Második update." });
+    await renderer.onUpdate({ type: "assistant_chunk_end" });
+
+    expect(recording.messages).toEqual([
+      "Első update.",
+      "Második update.",
+      "🟡 Még dolgozom rajta… (1 perc)",
+    ]);
+    expect(recording.edits).toEqual(["Első update.", "Második update."]);
   });
 
-  it("renders inline assistant and tool timeline in chronological order", async () => {
-    const payloads: LiveMessagePayload[] = [];
-    const makeHandle = (initial: LiveMessagePayload) => {
-      payloads.push(initial);
-      return {
-        edit: async (next: LiveMessagePayload) => {
-          payloads.push(next);
-        },
-      };
-    };
+  test("heartbeat edits the live message without creating a notification message", async () => {
+    const recording = createRecordingTarget();
+    const renderer = new LiveDiscordRunRenderer(recording.target, { heartbeatIntervalMs: 10 });
+    await renderer.showThinkingPlaceholder();
 
-    const renderer = new LiveDiscordRunRenderer({
-      ensurePrimary: async (payload) => makeHandle(payload),
-      createFollowUp: async (payload) => makeHandle(payload),
-    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
 
-    await renderer.onUpdate({ type: "assistant_delta", delta: "First message." });
-    await renderer.onUpdate({ type: "tool_start", toolCallId: "1", toolName: "edit", args: { path: "src/index.ts" } });
-    await renderer.onUpdate({ type: "assistant_delta", delta: "Second message." });
-    await renderer.onUpdate({ type: "tool_end", toolCallId: "1", toolName: "edit", isError: false, args: { path: "src/index.ts" } });
-    await renderer.onUpdate({ type: "tool_start", toolCallId: "2", toolName: "read", args: { path: "README.md" } });
-    await renderer.onUpdate({ type: "tool_end", toolCallId: "2", toolName: "read", isError: false, args: { path: "README.md" } });
-    await renderer.finalize("Done.");
-
-    const combined = payloads.map((payload) => payload.content ?? "").join("\n");
-    expect(combined).toContain("First message.");
-    expect(combined).toContain("✅ `edit` `src/index.ts`");
-    expect(combined).toContain("Second message.");
-    expect(combined).toContain("✅ `read` `README.md`");
-    expect(combined.indexOf("First message.")).toBeLessThan(combined.indexOf("✅ `edit` `src/index.ts`"));
-    expect(combined.indexOf("✅ `edit` `src/index.ts`")).toBeLessThan(combined.indexOf("Second message."));
-    expect(combined.indexOf("Second message.")).toBeLessThan(combined.indexOf("✅ `read` `README.md`"));
+    expect(recording.messages).toHaveLength(1);
+    expect(recording.messages[0]).toContain("Még dolgozom rajta");
+    expect(recording.edits.length).toBeGreaterThan(0);
   });
 
-  it("renders run metadata for model, thinking, context usage, and skill activity", async () => {
-    const payloads: LiveMessagePayload[] = [];
-    const makeHandle = (initial: LiveMessagePayload) => {
-      payloads.push(initial);
-      return {
-        edit: async (next: LiveMessagePayload) => {
-          payloads.push(next);
-        },
-      };
-    };
+  test("tool activity and hidden reasoning never appear in the live report", async () => {
+    const recording = createRecordingTarget();
+    const renderer = new LiveDiscordRunRenderer(recording.target);
+    await renderer.showThinkingPlaceholder();
 
-    const renderer = new LiveDiscordRunRenderer({
-      ensurePrimary: async (payload) => makeHandle(payload),
-      createFollowUp: async (payload) => makeHandle(payload),
-    });
-    renderer.setSkillContext("brainstorming", "Refine the feature idea");
-
+    await renderer.onUpdate({ type: "thinking_start" });
     await renderer.onUpdate({
-      type: "run_state",
-      modelReference: "openai-codex/gpt-5.3-codex",
-      thinkingLevel: "high",
-      contextUsage: { tokens: 12345, contextWindow: 272000, percent: 4.5 },
+      type: "tool_start",
+      toolCallId: "secret-call",
+      toolName: "bash",
+      args: { command: "cat /internal/secret" },
     });
-    await renderer.finalize("Done.");
 
-    expect(payloads.some((payload) => payload.content?.includes("Model: openai-codex/gpt-5.3-codex"))).toBe(true);
-    expect(payloads.some((payload) => payload.content?.includes("Thinking: high"))).toBe(true);
-    expect(payloads.some((payload) => payload.content?.includes("Context: 12,345 / 272,000 (4.5%)"))).toBe(true);
-    expect(payloads.some((payload) => payload.content?.includes("🧠 skill `brainstorming`"))).toBe(true);
+    expect(recording.messages.join("\n")).not.toMatch(/bash|cat \/internal|secret-call|Thinking/);
   });
 
-  it("shows completed tool state in the inline timeline", async () => {
-    const payloads: LiveMessagePayload[] = [];
-    const makeHandle = (initial: LiveMessagePayload) => {
-      payloads.push(initial);
-      return {
-        edit: async (next: LiveMessagePayload) => {
-          payloads.push(next);
-        },
-      };
-    };
-
-    const renderer = new LiveDiscordRunRenderer({
-      ensurePrimary: async (payload) => makeHandle(payload),
-      createFollowUp: async (payload) => makeHandle(payload),
+  test("multiple assistant turns share one renderer and finalize exactly once", async () => {
+    const recording = createRecordingTarget();
+    const renderer = new LiveDiscordRunRenderer(recording.target);
+    await renderer.showThinkingPlaceholder();
+    await renderer.onUpdate({ type: "assistant_delta", delta: "Köztes riport." });
+    await renderer.onUpdate({ type: "assistant_chunk_end" });
+    await renderer.onUpdate({
+      type: "tool_start",
+      toolCallId: "second-turn-tool",
+      toolName: "bash",
+      args: { command: "npm test" },
     });
+    await renderer.onUpdate({
+      type: "tool_end",
+      toolCallId: "second-turn-tool",
+      toolName: "bash",
+      isError: false,
+    });
+    await renderer.onUpdate({ type: "assistant_delta", delta: "Második kör." });
+    await renderer.onUpdate({ type: "assistant_chunk_end" });
 
-    await renderer.onUpdate({ type: "tool_start", toolCallId: "1", toolName: "read", args: { path: "src/index.ts" } });
-    await renderer.onUpdate({ type: "tool_end", toolCallId: "1", toolName: "read", isError: false, args: { path: "src/index.ts" } });
-    await renderer.finalize("Done.");
+    await renderer.finalize("A munka elkészült és ellenőrzött.");
+    await renderer.finalize("Ezt már nem szabad kézbesíteni.");
 
-    expect(payloads.some((payload) => payload.content?.includes("✅ `read` `src/index.ts`"))).toBe(true);
+    expect(recording.messages).toEqual([
+      "Köztes riport.",
+      "Második kör.",
+      "A munka elkészült és ellenőrzött.",
+      "🟢 Készen vagyok (1 perc)",
+    ]);
+    expect(renderer.isFinalDeliverySuccessful()).toBe(true);
   });
 
-  it("seals current messages and continues in new follow-ups", async () => {
-    const payloads: LiveMessagePayload[] = [];
-    const makeHandle = (initial: LiveMessagePayload) => {
-      payloads.push(initial);
-      return {
-        edit: async (next: LiveMessagePayload) => {
-          payloads.push(next);
-        },
-      };
-    };
-
+  test("a missing working status falls back to a new report message", async () => {
+    const reports: string[] = [];
     const renderer = new LiveDiscordRunRenderer({
-      ensurePrimary: async (payload) => makeHandle(payload),
-      createFollowUp: async (payload) => makeHandle(payload),
+      createEditable: async () => {
+        throw new Error("Discord status creation failed");
+      },
+      createFollowUp: async ({ content }) => {
+        if (content) reports.push(content);
+      },
     });
 
-    // Phase 1: AI streams some content
-    await renderer.onUpdate({ type: "assistant_delta", delta: "Working on it..." });
-    await renderer.onUpdate({ type: "tool_start", toolCallId: "t1", toolName: "bash", args: { command: "npm test" } });
+    await expect(renderer.showThinkingPlaceholder()).rejects.toThrow(
+      "Discord status creation failed",
+    );
+    await renderer.finalize("report");
 
-    // Seal — simulates user interrupting mid-stream
-    await renderer.sealCurrentMessages();
-
-    const beforeSealCount = payloads.length;
-    const beforeSeal = payloads.map((p) => p.content ?? "").join("|||");
-    expect(beforeSeal).toContain("Working on it...");
-    expect(beforeSeal).toContain("bash");
-
-    // Phase 2: AI continues after steer
-    await renderer.onUpdate({ type: "assistant_delta", delta: "Checking tests now." });
-    await renderer.finalize("Done.");
-
-    const afterSeal = payloads.slice(beforeSealCount).map((p) => p.content ?? "").join("|||");
-    expect(afterSeal).toContain("Checking tests now.");
-    // The sealed content should NOT reappear in the follow-up
-    expect(afterSeal).not.toContain("Working on it...");
+    expect(reports).toEqual(["report", "🟢 Készen vagyok (1 perc)"]);
+    expect(renderer.isFinalDeliverySuccessful()).toBe(true);
   });
 
-  it("keeps output free of interactive UI clutter", async () => {
-    const payloads: LiveMessagePayload[] = [];
-    const makeHandle = (initial: LiveMessagePayload) => {
-      payloads.push(initial);
-      return {
-        edit: async (next: LiveMessagePayload) => {
-          payloads.push(next);
-        },
-      };
-    };
+  test.each([
+    ["message operation", { operationTimeoutMs: 0 }, "Discord message operation timeout must be positive"],
+    ["heartbeat", { heartbeatIntervalMs: 0 }, "Discord heartbeat interval must be positive"],
+  ])("a non-positive %s timeout is rejected", (_label, options, expected) => {
+    const target = createRecordingTarget().target;
+    expect(() => new LiveDiscordRunRenderer(target, options)).toThrow(expected);
+  });
 
-    const renderer = new LiveDiscordRunRenderer({
-      ensurePrimary: async (payload) => makeHandle(payload),
-      createFollowUp: async (payload) => makeHandle(payload),
-    });
-
-    await renderer.onUpdate({ type: "assistant_delta", delta: "Hello" });
-    await renderer.finalize("Done.");
-
-    expect(payloads.every((payload) => !payload.components || payload.components.length === 0)).toBe(true);
+  test("ending a chunk without assistant text is rejected", async () => {
+    const renderer = new LiveDiscordRunRenderer(createRecordingTarget().target);
+    await expect(renderer.onUpdate({ type: "assistant_chunk_end" }))
+      .rejects.toThrow("Assistant chunk ended without assistant text");
   });
 });

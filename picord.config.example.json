@@ -19,6 +19,10 @@
   "critiqueAutoShare": false,
   "cavemanLevel": "off",
   "systemPromptAppend": "Keep Discord responses concise unless the user asks for detail.",
+  "voiceTranscription": {
+    "enabled": true,
+    "model": "gpt-4o-transcribe"
+  },
   "exaApiKey": "OPTIONAL_SET_PICORD_EXA_API_KEY_ENV_INSTEAD",
   "modelOverrides": {
     "minimax/m2.7": { "contextWindow": 205000 },

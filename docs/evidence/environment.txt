@@ -1,0 +1,6 @@
+captured_at=2026-08-26T00:02:28+02:00
+host_pi=0.84.3
+host_pi_package=0.84.3
+picord_package=0.4.0
+agent_os_state_head=b1ab8af6d881f2c177ef8afe14acff4a892389ad
+agent_os_coding_head=f0496568cfb8548c13cf68c58a54c6d32ee915a6

@@ -3,6 +3,17 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export type CavemanLevel = "off" | "lite" | "full" | "ultra" | "wenyan-lite" | "wenyan-full" | "wenyan-ultra";
 export type MultiAuthRotationMode = "round-robin" | "usage-based" | "balancer";
 
+export interface PromptImageContent {
+  type: "image";
+  data: string;
+  mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+}
+
+export interface PromptInput {
+  text: string;
+  content: PromptImageContent[];
+}
+
 export interface MultiAuthPicordConfig {
   enabled?: boolean;
   debug?: boolean;
@@ -37,6 +48,11 @@ export interface ModelOverride {
   isReasoning?: boolean;
 }
 
+export interface VoiceTranscriptionConfig {
+  enabled?: boolean;
+  model?: string;
+}
+
 export interface PicordFileConfig {
   allowDm?: boolean;
   cwd?: string;
@@ -63,6 +79,7 @@ export interface PicordFileConfig {
   multiAuth?: MultiAuthPicordConfig;
   exaApiKey?: string;
   modelOverrides?: Record<string, ModelOverride>;
+  voiceTranscription?: VoiceTranscriptionConfig;
   cavemanLevel?: CavemanLevel;
 }
 
@@ -94,6 +111,7 @@ export interface PicordRuntimeConfig extends PicordFileConfig {
   multiAuth: MultiAuthPicordConfig;
   exaApiKey?: string;
   modelOverrides?: Record<string, ModelOverride>;
+  voiceTranscription: Required<VoiceTranscriptionConfig>;
   cavemanLevel: CavemanLevel;
 }
 

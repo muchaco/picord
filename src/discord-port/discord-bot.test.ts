@@ -1,321 +1,112 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ChannelType, Events, ThreadAutoArchiveDuration } from "discord.js";
+import { describe, expect, test, vi } from "vitest";
+import type { LiveDiscordRunRenderer } from "../live-discord-renderer.js";
+import type { DiscordPortRuntimeAdapter } from "./types.js";
+import {
+  registerReadyLiveRenderer,
+  steerActiveDiscordRun,
+} from "./discord-bot.js";
 
-const {
-  canAccessDiscordMessageMock,
-  replyToMessageMock,
-  buildPromptFromMessageMock,
-} = vi.hoisted(() => ({
-  canAccessDiscordMessageMock: vi.fn(async () => ({ allowed: true })),
-  replyToMessageMock: vi.fn(async () => undefined),
-  buildPromptFromMessageMock: vi.fn(
-    (message: { content: string }, promptText: string) =>
-      promptText || message.content,
-  ),
-}));
-
-vi.mock("./access-control.js", () => ({
-  canAccessDiscordMessage: canAccessDiscordMessageMock,
-}));
-
-vi.mock("./message-helpers.js", () => ({
-  replyToMessage: replyToMessageMock,
-  buildPromptFromMessage: buildPromptFromMessageMock,
-}));
-
-import { registerDiscordPortBot } from "./discord-bot.js";
-
-function createClientStub() {
-  const handlers = new Map<string | symbol, Array<(...args: any[]) => any>>();
+function createAdapter(streaming: boolean) {
   return {
-    on: vi.fn((event: string | symbol, handler: (...args: any[]) => any) => {
-      const list = handlers.get(event) ?? [];
-      list.push(handler);
-      handlers.set(event, list);
-    }),
-    once: vi.fn((event: string | symbol, handler: (...args: any[]) => any) => {
-      const list = handlers.get(event) ?? [];
-      list.push(handler);
-      handlers.set(event, list);
-    }),
-    user: { tag: "picord#0001", id: "bot-1" },
-    __emit: async (event: string | symbol, ...args: any[]) => {
-      for (const handler of handlers.get(event) ?? []) {
-        await handler(...args);
-      }
-    },
-  } as any;
-}
-
-function createRuntimeStub() {
-  const adapter = {
-    config: { hostChannelName: "host" },
-    isManagedProjectChannel: vi.fn(
-      (channelId: string) => channelId === "project-1" || channelId.startsWith("thread-"),
-    ),
-    registerLiveRenderer: vi.fn(),
-    sealLiveRenderer: vi.fn(async () => undefined),
-    clearLiveRenderer: vi.fn(),
-    respond: vi.fn(
-      async ({ promptText }: { promptText: string }) =>
-        `response:${promptText}`,
-    ),
-    abort: vi.fn(async () => true),
+    isStreaming: vi.fn(() => streaming),
     steer: vi.fn(async () => true),
-    waitForRespondDone: vi.fn(async () => undefined),
-    isStreaming: vi.fn(() => false),
-    getThinkingVisibility: vi.fn(() => true),
-  };
-
-  return {
-    adapter,
-    bindThread: vi.fn((thread: any) => ({
-      thread,
-      workspaceKey: `discord:guild:${thread.guildId}:workspace:${thread.parentId ?? thread.id}`,
-      conversationKey: `discord:guild:${thread.guildId}:thread:${thread.id}`,
-      sessionName: thread.name,
-    })),
-  } as any;
+    abort: vi.fn(),
+    respond: vi.fn(),
+    registerLiveRenderer: vi.fn(),
+    clearLiveRenderer: vi.fn(),
+    sealLiveRenderer: vi.fn(),
+  } as unknown as DiscordPortRuntimeAdapter;
 }
 
-describe("discord-bot message flow", () => {
-  beforeEach(() => {
-    canAccessDiscordMessageMock.mockClear();
-    replyToMessageMock.mockClear();
-    buildPromptFromMessageMock.mockClear();
+describe("normal Discord message steering", () => {
+  test.each([
+    "discord:dm:123",
+    "discord:guild:1:thread:456",
+  ])("an active %s run is steered without replacing the run", async (conversationKey) => {
+    const adapter = createAdapter(true);
+
+    await expect(
+      steerActiveDiscordRun(adapter, conversationKey, "new instruction"),
+    ).resolves.toBe(true);
+
+    expect(adapter.steer).toHaveBeenCalledWith(conversationKey, "new instruction");
+    expect(adapter.abort).not.toHaveBeenCalled();
+    expect(adapter.respond).not.toHaveBeenCalled();
+    expect(adapter.registerLiveRenderer).not.toHaveBeenCalled();
+    expect(adapter.clearLiveRenderer).not.toHaveBeenCalled();
+    expect(adapter.sealLiveRenderer).not.toHaveBeenCalled();
   });
 
-  it("interrupts the previous thread run and tags the new run with a run id", async () => {
-    const client = createClientStub();
-    const runtime = createRuntimeStub();
-
-    registerDiscordPortBot({ client, runtime, enableMessageContent: true });
-
-    const thread = {
-      id: "thread-1",
-      parentId: "project-1",
-      guildId: "guild-1",
-      name: "session thread",
-      type: ChannelType.PublicThread,
-      sendTyping: vi.fn(async () => undefined),
-      send: vi.fn(async () => ({ edit: vi.fn(async () => undefined) })),
-      isThread: () => true,
+  test("steering preserves native image content", async () => {
+    const adapter = createAdapter(true);
+    const image = {
+      type: "image" as const,
+      data: "iVBORw0KGgo=",
+      mimeType: "image/png" as const,
     };
 
-    const message = {
-      author: { bot: false, username: "V", id: "user-1" },
-      content: "hello there",
-      attachments: { size: 0 },
-      inGuild: () => true,
-      guildId: "guild-1",
-      channelId: "thread-1",
-      channel: thread,
-      reply: vi.fn(async () => undefined),
-    } as any;
+    await steerActiveDiscordRun(adapter, "discord:dm:123", "inspect", [image]);
 
-    await client.__emit(Events.MessageCreate, message);
-
-    expect(runtime.adapter.registerLiveRenderer).toHaveBeenCalledWith(
-      "discord:guild:guild-1:thread:thread-1",
-      expect.anything(),
-      1,
-    );
-    expect(runtime.adapter.respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationKey: "discord:guild:guild-1:thread:thread-1",
-        runId: 1,
-      }),
+    expect(adapter.steer).toHaveBeenCalledWith(
+      "discord:dm:123",
+      "inspect",
+      [image],
     );
   });
 
-  it("interrupts DM runs too instead of letting them pile up", async () => {
-    const client = createClientStub();
-    const runtime = createRuntimeStub();
+  test("multiple messages are passed to the native steering queue in order", async () => {
+    const adapter = createAdapter(true);
+    const conversationKey = "discord:dm:123";
 
-    registerDiscordPortBot({ client, runtime, enableMessageContent: true });
+    await Promise.all([
+      steerActiveDiscordRun(adapter, conversationKey, "first"),
+      steerActiveDiscordRun(adapter, conversationKey, "second"),
+      steerActiveDiscordRun(adapter, conversationKey, "third"),
+    ]);
 
-    const dmChannel = {
-      id: "dm-1",
-      type: ChannelType.DM,
-      sendTyping: vi.fn(async () => undefined),
-      send: vi.fn(async () => ({ edit: vi.fn(async () => undefined) })),
-      isThread: () => false,
-    };
-
-    const message = {
-      author: { bot: false, username: "V", id: "user-1" },
-      content: "hi from dm",
-      attachments: { size: 0 },
-      inGuild: () => false,
-      channelId: "dm-1",
-      channel: dmChannel,
-      reply: vi.fn(async () => undefined),
-    } as any;
-
-    await client.__emit(Events.MessageCreate, message);
-
-    expect(runtime.adapter.registerLiveRenderer).toHaveBeenCalledWith(
-      "discord:dm:dm-1",
-      expect.anything(),
-      1,
-    );
-    expect(runtime.adapter.respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationKey: "discord:dm:dm-1",
-        runId: 1,
-      }),
-    );
+    expect(adapter.steer).toHaveBeenNthCalledWith(1, conversationKey, "first");
+    expect(adapter.steer).toHaveBeenNthCalledWith(2, conversationKey, "second");
+    expect(adapter.steer).toHaveBeenNthCalledWith(3, conversationKey, "third");
+    expect(adapter.respond).not.toHaveBeenCalled();
   });
 
-  it("aborts and re-responds when the session is already streaming", async () => {
-    const client = createClientStub();
-    const runtime = createRuntimeStub();
-    runtime.adapter.isStreaming.mockReturnValue(true);
+  test("an idle message remains available to start a new respond run", async () => {
+    const adapter = createAdapter(false);
 
-    registerDiscordPortBot({ client, runtime, enableMessageContent: true });
+    await expect(
+      steerActiveDiscordRun(adapter, "discord:dm:123", "start"),
+    ).resolves.toBe(false);
 
-    const thread = {
-      id: "thread-1",
-      parentId: "project-1",
-      guildId: "guild-1",
-      name: "session thread",
-      type: ChannelType.PublicThread,
-      sendTyping: vi.fn(async () => undefined),
-      send: vi.fn(async () => ({ edit: vi.fn(async () => undefined) })),
-      isThread: () => true,
-    };
-
-    const message = {
-      author: { bot: false, username: "V", id: "user-1" },
-      content: "change direction",
-      attachments: { size: 0 },
-      inGuild: () => true,
-      guildId: "guild-1",
-      channelId: "thread-1",
-      channel: thread,
-      reply: vi.fn(async () => undefined),
-    } as any;
-
-    await client.__emit(Events.MessageCreate, message);
-
-    // When streaming: seal → clear → abort → wait for old respond → new respond
-    expect(runtime.adapter.sealLiveRenderer).toHaveBeenCalledWith(
-      "discord:guild:guild-1:thread:thread-1",
-    );
-    expect(runtime.adapter.clearLiveRenderer).toHaveBeenCalledWith(
-      "discord:guild:guild-1:thread:thread-1",
-    );
-    expect(runtime.adapter.abort).toHaveBeenCalledWith(
-      "discord:guild:guild-1:thread:thread-1",
-    );
-    expect(runtime.adapter.waitForRespondDone).toHaveBeenCalledWith(
-      "discord:guild:guild-1:thread:thread-1",
-    );
-    expect(runtime.adapter.respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationKey: "discord:guild:guild-1:thread:thread-1",
-        promptText: "change direction",
-      }),
-    );
+    expect(adapter.steer).not.toHaveBeenCalled();
   });
 
-  it("aborts and re-responds when the DM session is already streaming", async () => {
-    const client = createClientStub();
-    const runtime = createRuntimeStub();
-    runtime.adapter.isStreaming.mockReturnValue(true);
+  test("a streaming conversation without a session fails diagnostically", async () => {
+    const adapter = createAdapter(true);
+    vi.mocked(adapter.steer).mockResolvedValue(false);
 
-    registerDiscordPortBot({ client, runtime, enableMessageContent: true });
-
-    const dmChannel = {
-      id: "dm-1",
-      type: ChannelType.DM,
-      sendTyping: vi.fn(async () => undefined),
-      send: vi.fn(async () => ({ edit: vi.fn(async () => undefined) })),
-      isThread: () => false,
-    };
-
-    const message = {
-      author: { bot: false, username: "V", id: "user-1" },
-      content: "interrupt me",
-      attachments: { size: 0 },
-      inGuild: () => false,
-      channelId: "dm-1",
-      channel: dmChannel,
-      reply: vi.fn(async () => undefined),
-    } as any;
-
-    await client.__emit(Events.MessageCreate, message);
-
-    // When streaming: seal → clear → abort → wait for old respond → new respond
-    expect(runtime.adapter.sealLiveRenderer).toHaveBeenCalledWith(
-      "discord:dm:dm-1",
-    );
-    expect(runtime.adapter.clearLiveRenderer).toHaveBeenCalledWith(
-      "discord:dm:dm-1",
-    );
-    expect(runtime.adapter.abort).toHaveBeenCalledWith("discord:dm:dm-1");
-    expect(runtime.adapter.waitForRespondDone).toHaveBeenCalledWith(
-      "discord:dm:dm-1",
-    );
-    expect(runtime.adapter.respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationKey: "discord:dm:dm-1",
-        promptText: "interrupt me",
-      }),
-    );
+    await expect(
+      steerActiveDiscordRun(adapter, "discord:dm:123", "continue"),
+    ).rejects.toThrow("Streaming conversation has no steerable session");
   });
 
-  it("starts project-channel messages in a new thread with latest-run semantics", async () => {
-    const client = createClientStub();
-    const runtime = createRuntimeStub();
-
-    registerDiscordPortBot({ client, runtime, enableMessageContent: true });
-
-    const thread = {
-      id: "thread-2",
-      parentId: "project-1",
-      guildId: "guild-1",
-      name: "new task",
-      type: ChannelType.PublicThread,
-      sendTyping: vi.fn(async () => undefined),
-      send: vi.fn(async () => ({ edit: vi.fn(async () => undefined) })),
-      members: { add: vi.fn(async () => undefined) },
-      isThread: () => true,
-    };
-
-    const channel = {
-      id: "project-1",
-      type: ChannelType.GuildText,
-      sendTyping: vi.fn(async () => undefined),
-      name: "project-1",
-      isThread: () => false,
-    };
-
-    const message = {
-      author: { bot: false, username: "V", id: "user-1" },
-      content: "new task",
-      attachments: { size: 0 },
-      inGuild: () => true,
-      guildId: "guild-1",
-      channelId: "project-1",
-      channel,
-      mentions: { has: (id: string) => id === "bot-1" },
-      startThread: vi.fn(async (options: any) => {
-        expect(options.autoArchiveDuration).toBe(
-          ThreadAutoArchiveDuration.OneDay,
-        );
-        return thread;
+  test("a failed working status registers no renderer and starts no run", async () => {
+    const adapter = createAdapter(false);
+    const renderer = {
+      showThinkingPlaceholder: vi.fn(async () => {
+        throw new Error("Discord status creation failed");
       }),
-      reply: vi.fn(async () => undefined),
-    } as any;
+    } as unknown as LiveDiscordRunRenderer;
 
-    await client.__emit(Events.MessageCreate, message);
+    await expect(
+      registerReadyLiveRenderer(
+        adapter,
+        "discord:dm:123",
+        renderer,
+        7,
+      ),
+    ).rejects.toThrow("Discord status creation failed");
 
-    expect(runtime.adapter.respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationKey: "discord:guild:guild-1:thread:thread-2",
-        runId: 1,
-      }),
-    );
+    expect(adapter.registerLiveRenderer).not.toHaveBeenCalled();
+    expect(adapter.respond).not.toHaveBeenCalled();
   });
 });

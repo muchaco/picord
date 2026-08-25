@@ -1,9 +1,15 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { ChannelType, Events, type Client, type Guild } from "discord.js";
+import { ChannelType, Events, type Client, type Guild, type ThreadChannel } from "discord.js";
 import { loadRuntimeConfig } from "../config.js";
 import { type LiveDiscordRunRenderer, type PiLiveUpdate } from "../live-discord-renderer.js";
 import { PiSessionPool } from "../pi-session.js";
-import { clearRestartNotification, readRestartNotification } from "../restart-notification.js";
+import {
+  acknowledgeRestartRecoveries,
+  clearRestartNotification,
+  enqueueRestartRecoveries,
+  readRestartNotification,
+  readRestartRecoveries,
+} from "../restart-notification.js";
 import { RuntimeLock } from "../runtime-lock.js";
 import { sendTextResponse } from "./message-helpers.js";
 import { PiSessionPoolAdapter } from "./pi-runtime-adapter.js";
@@ -235,6 +241,22 @@ export async function startDiscordPortExtensionRuntime({
     }
     cleanedUp = true;
 
+    const interruptedAt = new Date().toISOString();
+    const recoveries = [...liveRenderers.keys()].flatMap((conversationKey) => {
+      const channelId = getChannelIdFromConversationKey(conversationKey);
+      return channelId ? [{ channelId, conversationKey, interruptedAt }] : [];
+    });
+    if (recoveries.length > 0) {
+      try {
+        enqueueRestartRecoveries(config.statePath, recoveries);
+      } catch (error) {
+        notify(
+          `restart recovery journal failed: ${truncateErrorMessage(error instanceof Error ? error.message : String(error))}`,
+          "error",
+        );
+      }
+    }
+
     process.off("unhandledRejection", rejectionHandler);
     process.off("uncaughtException", exceptionHandler);
 
@@ -256,6 +278,24 @@ export async function startDiscordPortExtensionRuntime({
     if (reason) {
       notify(reason, "info");
     }
+  };
+
+  const reconnectThread = async (
+    thread: ThreadChannel,
+    expectedConversationKey?: string,
+  ): Promise<void> => {
+    const conversationKey = `discord:guild:${thread.guildId}:thread:${thread.id}`;
+    if (expectedConversationKey && expectedConversationKey !== conversationKey) {
+      throw new Error(
+        `Recovery conversation mismatch: expected ${expectedConversationKey}, resolved ${conversationKey}`,
+      );
+    }
+    const workspaceKey = `discord:guild:${thread.guildId}:workspace:${thread.parentId ?? thread.id}`;
+    await adapter.reconnectSession({
+      conversationKey,
+      workspaceKey,
+      sessionName: thread.name,
+    });
   };
 
   const start = async (enableMessageContent: boolean) => {
@@ -296,6 +336,28 @@ export async function startDiscordPortExtensionRuntime({
           notify(hostMessage, hostMessage.includes("unresolved") ? "warning" : "info");
         }
 
+        const recoveredConversationKeys: string[] = [];
+        for (const recovery of readRestartRecoveries(config.statePath)) {
+          try {
+            const channel = await createdClient.channels.fetch(recovery.channelId);
+            if (!channel?.isThread()) {
+              throw new Error(`Recovery channel ${recovery.channelId} is not a Discord thread`);
+            }
+            await reconnectThread(channel, recovery.conversationKey);
+            await sendTextResponse(
+              channel,
+              "✅ Picord restarted and reconnected this thread to its existing Pi session. The interrupted run was not replayed automatically; send a message to continue safely.",
+            );
+            recoveredConversationKeys.push(recovery.conversationKey);
+          } catch (error) {
+            notify(
+              `session recovery failed for ${recovery.conversationKey}: ${truncateErrorMessage(error instanceof Error ? error.message : String(error))}`,
+              "warning",
+            );
+          }
+        }
+        acknowledgeRestartRecoveries(config.statePath, recoveredConversationKeys);
+
         const restartNotification = readRestartNotification(config.statePath);
         if (restartNotification) {
           try {
@@ -304,11 +366,23 @@ export async function startDiscordPortExtensionRuntime({
               throw new Error(`Channel ${restartNotification.channelId} is unavailable`);
             }
 
+            let sessionReconnected = false;
+            if (channel.isThread()) {
+              const conversationKey = `discord:guild:${channel.guildId}:thread:${channel.id}`;
+              if (!recoveredConversationKeys.includes(conversationKey)) {
+                await reconnectThread(channel);
+              }
+              sessionReconnected = true;
+            }
+
+            const status = sessionReconnected
+              ? "✅ Picord is back online and the existing session is reconnected."
+              : "✅ Picord is back online.";
             await sendTextResponse(
               channel,
               restartNotification.requestedByTag
-                ? `✅ Picord is back online. Restart requested by ${restartNotification.requestedByTag}.`
-                : "✅ Picord is back online.",
+                ? `${status} Restart requested by ${restartNotification.requestedByTag}.`
+                : status,
             );
             clearRestartNotification(config.statePath);
           } catch (error) {

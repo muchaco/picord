@@ -29,6 +29,42 @@ function fallbackModel(
   const base = available.find((m) => m.provider === provider);
   return base ? { ...base, id, name: id } : undefined;
 }
+
+interface StoredModelSummary {
+  provider: string;
+  id: string;
+  name: string;
+}
+
+function loadStoredModelSummaries(): StoredModelSummary[] {
+  const modelsPath = path.join(homedir(), ".pi", "agent", "models-store.json");
+
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
+    if (!parsed || typeof parsed !== "object") return [];
+
+    const summaries: StoredModelSummary[] = [];
+    for (const [provider, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object") continue;
+      const models = (value as { models?: unknown }).models;
+      if (!Array.isArray(models)) continue;
+
+      for (const model of models) {
+        if (!model || typeof model !== "object") continue;
+        const record = model as { id?: unknown; name?: unknown };
+        if (typeof record.id !== "string" || record.id.trim() === "") continue;
+        summaries.push({
+          provider,
+          id: record.id,
+          name: typeof record.name === "string" ? record.name : record.id,
+        });
+      }
+    }
+    return summaries;
+  } catch {
+    return [];
+  }
+}
 import type { PiLiveUpdate } from "./live-discord-renderer.js";
 import { AccessApprovalManager } from "./access-approval.js";
 import type { AccessContext } from "./path-policy.js";
@@ -48,6 +84,7 @@ import type {
   PicordRuntimeConfig,
   CavemanLevel, SkillSummary,
   ThinkingLevel,
+  PromptImageContent,
   WorkspaceInfo,
   WorkspaceModelScopeResult,
 } from "./types.js";
@@ -60,6 +97,34 @@ interface SessionHandle {
   session: AgentSession;
   workspaceKey: string;
   conversationKey: string;
+}
+
+export async function steerAgentSession(
+  session: Pick<AgentSession, "steer">,
+  text: string,
+  images: PromptImageContent[] = [],
+): Promise<void> {
+  if (images.length > 0) {
+    await session.steer(text, images);
+    return;
+  }
+  await session.steer(text);
+}
+
+export function assertRespondCanStart(
+  conversationKey: string,
+  state: "respond-active" | "session-streaming" | "idle",
+): void {
+  if (state === "respond-active") {
+    throw new Error(
+      `Concurrent respond() is forbidden for conversation ${conversationKey}; use steer() while the session is streaming.`,
+    );
+  }
+  if (state === "session-streaming") {
+    throw new Error(
+      `Session is already streaming for ${conversationKey}; a new respond() would violate the single-run invariant.`,
+    );
+  }
 }
 
 interface WorkspaceState {
@@ -97,6 +162,7 @@ function buildSystemPrompt(config: PicordRuntimeConfig): string {
     "Discord threads are task sessions. Use the thread name as the session title.",
     "Respect workspace boundaries. Do not try to access files outside the configured workspace unless the owner approves it.",
     "Sassy Discord assistant. Dry confidence, playful edge. Prioritize clarity over personality.\n\n" + buildCavemanPrompt(config.cavemanLevel),
+    "Discord progress contract: for every non-trivial task, before using tools, send one concise user-facing opening that (1) states your understanding of the request, explicitly confirming uncertain voice transcription or interpretation, and (2) gives rough scope plus a 1-3 step plan. During long work, send a new update only at a meaningful user-visible milestone, such as completing investigation, implementing the change, or finishing validation. Do not narrate routine tool activity, commands, file reads, internal tool names, model/provider/context metadata, hidden reasoning, or cryptic statuses. Do not emit generic thinking placeholders; the renderer supplies a low-frequency heartbeat. Do not invent exact ETAs; state uncertainty instead. Always end with a clear final report, or an explicit user-facing error/timeout report if completion is impossible.",
     `Available tools: ${toolLabel}.`,
     config.systemPromptAppend,
   ]
@@ -191,6 +257,7 @@ interface PendingOAuthLogin {
 export class PiSessionPool {
   private readonly authStorage = AuthStorage.create();
   private readonly modelRegistry = ModelRegistry.create(this.authStorage);
+  private readonly storedModelSummaries = loadStoredModelSummaries();
   private readonly sessions = new Map<string, SessionHandle>();
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly workspaces = new Map<string, WorkspaceState>();
@@ -285,17 +352,14 @@ export class PiSessionPool {
     const oauthProviders = this.authStorage.getOAuthProviders();
     const oauthIds = new Set(oauthProviders.map((provider) => provider.id));
     const configuredProviders = new Set(this.authStorage.list());
-    const providerOptions = new Map<
-      string,
-      {
-        id: string;
-        name: string;
-        method: "api-key" | "oauth";
-        hasStoredAuth: boolean;
-        supportsDiscordFlow?: boolean;
-        discordFlowReason?: string;
-      }
-    >();
+    const providerOptions = new Map<string, {
+      id: string;
+      name: string;
+      method: "api-key" | "oauth";
+      hasStoredAuth: boolean;
+      supportsDiscordFlow?: boolean;
+      discordFlowReason?: string;
+    }>();
 
     for (const provider of oauthProviders) {
       providerOptions.set(provider.id, {
@@ -606,13 +670,14 @@ export class PiSessionPool {
     await entry.promise;
   }
 
-  async steer(conversationKey: string, text: string): Promise<boolean> {
+  async steer(
+    conversationKey: string,
+    text: string,
+    images: PromptImageContent[] = [],
+  ): Promise<boolean> {
     const handle = this.sessions.get(conversationKey);
     if (!handle) return false;
-    if (handle.session.isBashRunning) {
-      handle.session.abortBash();
-    }
-    await handle.session.steer(text);
+    await steerAgentSession(handle.session, text, images);
     return true;
   }
 
@@ -713,6 +778,28 @@ export class PiSessionPool {
     });
   }
 
+  async reconnectSession(options: {
+    conversationKey: string;
+    workspaceKey: string;
+    sessionName: string;
+  }): Promise<{ path: string; cwd: string; id: string; name?: string }> {
+    const persistedSessionFile = this.registry.getSessionFile(options.conversationKey);
+    if (!persistedSessionFile) {
+      throw new Error(`No persisted session is bound to ${options.conversationKey}`);
+    }
+
+    return this.runExclusive(options.conversationKey, async () => {
+      const handle = await this.getOrCreateSession(options);
+      await this.syncSessionName(handle.session, options.sessionName);
+      return {
+        path: persistedSessionFile,
+        cwd: handle.session.sessionManager.getCwd(),
+        id: handle.session.sessionManager.getSessionId(),
+        name: handle.session.sessionName,
+      };
+    });
+  }
+
   resolveAccessRequest(requestId: string, mode: "once" | "always" | "deny") {
     return this.approvals.resolveRequest(requestId, mode);
   }
@@ -722,9 +809,15 @@ export class PiSessionPool {
     workspaceKey: string;
     sessionName: string;
     promptText: string;
+    promptContent?: PromptImageContent[];
     runId?: number;
   }): Promise<string> {
-    // Track this respond() so interrupt handlers can wait for it to finish.
+    assertRespondCanStart(
+      options.conversationKey,
+      this.respondDone.has(options.conversationKey) ? "respond-active" : "idle",
+    );
+
+    // Track this respond() so explicit interrupt handlers can wait for it.
     let resolveDone: () => void = () => {};
     const donePromise = new Promise<void>((r) => {
       resolveDone = r;
@@ -748,6 +841,10 @@ export class PiSessionPool {
         setTimeout(() => reject(new Error("Session setup timed out")), 120000),
       ),
     ]);
+    assertRespondCanStart(
+      options.conversationKey,
+      handle.session.isStreaming ? "session-streaming" : "idle",
+    );
 
     // Auto-compact if context is above 80%.
     const CONTEXT_COMPACT_THRESHOLD_PERCENT = 80;
@@ -824,6 +921,11 @@ export class PiSessionPool {
             return;
           }
 
+          if (event.assistantMessageEvent.type === "text_end") {
+            enqueueUpdate({ type: "assistant_chunk_end" });
+            return;
+          }
+
           if (event.assistantMessageEvent.type === "thinking_delta") {
             const delta = event.assistantMessageEvent.delta;
             enqueueUpdate({ type: "thinking_delta", delta });
@@ -895,20 +997,16 @@ export class PiSessionPool {
             type: "assistant_delta",
             delta: `\n\n❌ Provider error: ${truncatedError}`,
           });
+          enqueueUpdate({ type: "assistant_chunk_end" });
         }
       });
 
       try {
-        // If the SDK is still internally processing (race condition with
-        // isStreaming check in discord-bot), abort immediately so the new
-        // prompt takes over. User expects instant interruption, not queuing.
-        if (handle.session.isStreaming) {
-          await handle.session.abort().catch(() => undefined);
-        }
-        // SDK may still be settling after abort - brief delay prevents race
-        await new Promise((r) => setTimeout(r, 50));
         // Agentic runs take as long as they take; no prompt timeout.
-        await handle.session.prompt(options.promptText);
+        await handle.session.prompt(
+          options.promptText,
+          options.promptContent?.length ? { images: options.promptContent } : undefined,
+        );
         enqueueRunState();
         await notifyQueue;
       } finally {
@@ -1035,11 +1133,33 @@ export class PiSessionPool {
   }
 
   getAvailableModels(): ModelSummary[] {
-    return this.modelRegistry.getAvailable().map((model) => ({
-      provider: model.provider,
-      id: model.id,
-      name: model.name,
-    }));
+    const available = this.modelRegistry.getAvailable();
+    const configuredProviders = new Set(available.map((model) => model.provider));
+    const summaries: ModelSummary[] = [];
+    const knownReferences = new Set<string>();
+
+    // Put current models-store entries first. Discord only displays the first
+    // 25 autocomplete results, while the legacy registry knows many older IDs.
+    for (const stored of this.storedModelSummaries) {
+      if (!configuredProviders.has(stored.provider)) continue;
+      const reference = `${stored.provider}/${stored.id}`;
+      if (knownReferences.has(reference)) continue;
+      knownReferences.add(reference);
+      summaries.push(stored);
+    }
+
+    for (const model of available) {
+      const reference = `${model.provider}/${model.id}`;
+      if (knownReferences.has(reference)) continue;
+      knownReferences.add(reference);
+      summaries.push({
+        provider: model.provider,
+        id: model.id,
+        name: model.name,
+      });
+    }
+
+    return summaries;
   }
 
   setWorkspaceModelScope(
@@ -1119,7 +1239,7 @@ export class PiSessionPool {
   ): ModelSummary | undefined {
     const conversationModel = this.conversationModels.get(conversationKey);
     if (conversationModel) {
-      const model = this.modelRegistry.find(
+      const model = this.resolveRuntimeModel(
         conversationModel.provider,
         conversationModel.id,
       );
@@ -1134,11 +1254,10 @@ export class PiSessionPool {
       return undefined;
     }
 
-    const model = this.modelRegistry.find(
+    const model = this.resolveRuntimeModel(
       workspaceModel.provider,
       workspaceModel.id,
-    );
-    return model
+    );    return model
       ? { provider: model.provider, id: model.id, name: model.name }
       : undefined;
   }
@@ -1302,9 +1421,21 @@ export class PiSessionPool {
       : undefined;
     if (existing) return existing;
 
-    const settingsManager = SettingsManager.create(root);
+    const fileSettingsManager = SettingsManager.create(root);
+    await fileSettingsManager.reload();
+    const globalSettings = fileSettingsManager.getGlobalSettings();
+    const projectSettings = fileSettingsManager.getProjectSettings();
+    const configuredPackages = projectSettings.packages ?? globalSettings.packages ?? [];
+    const packagesWithoutPicord = configuredPackages.filter((entry) => {
+      const source = typeof entry === "string" ? entry : entry.source;
+      return !source.includes("@venthezone/picord");
+    });
+    const settingsManager = SettingsManager.inMemory({
+      ...globalSettings,
+      ...projectSettings,
+      packages: packagesWithoutPicord,
+    });
     const picordSkillsPath = path.join(getPicordPackageRoot(), "skills");
- const globalPiExtensionsPath = path.join(homedir(), ".pi", "extensions");
     const resourceLoader = new DefaultResourceLoader({
       cwd: root,
       agentDir: path.join(homedir(), ".pi", "agent"),
@@ -1312,12 +1443,23 @@ export class PiSessionPool {
       noThemes: true,
       appendSystemPrompt: [buildSystemPrompt(this.config)],
       extensionsOverride: (base) => filterOutPicordExtensions(base),
-      additionalSkillPaths: [picordSkillsPath, globalPiExtensionsPath],
+      additionalSkillPaths: [picordSkillsPath],
     });
-    await resourceLoader.reload().catch((err) => {
-    console.error(`[picord] Extension load failed:`, err);
-    throw err;
-    });
+
+    const previousDisableNestedRuntime = process.env.PICORD_DISABLE_NESTED_RUNTIME;
+    process.env.PICORD_DISABLE_NESTED_RUNTIME = "1";
+    try {
+      await resourceLoader.reload();
+    } catch (error) {
+      console.error("[picord] Extension load failed:", error);
+      throw error;
+    } finally {
+      if (previousDisableNestedRuntime === undefined) {
+        delete process.env.PICORD_DISABLE_NESTED_RUNTIME;
+      } else {
+        process.env.PICORD_DISABLE_NESTED_RUNTIME = previousDisableNestedRuntime;
+      }
+    }
 
     const state: WorkspaceState = {
       cwd: root,
@@ -1362,8 +1504,7 @@ export class PiSessionPool {
       this.conversationModels.get(options.conversationKey) ??
       workspaceState.selectedModel;
     const model = selectedModel
-      ? (this.modelRegistry.find(selectedModel.provider, selectedModel.id) ??
-        fallbackModel(selectedModel.provider, selectedModel.id, this.modelRegistry.getAvailable()))
+      ? this.resolveRuntimeModel(selectedModel.provider, selectedModel.id)
       : undefined;
 
     const accessContext: AccessContext = {
@@ -1396,9 +1537,15 @@ export class PiSessionPool {
     ];
 
     const scopedModels = this.listModels(options.workspaceKey).map(
-      (modelSummary) => ({
-        model: this.modelRegistry.find(modelSummary.provider, modelSummary.id)!,
-      }),
+      (modelSummary) => {
+        const model = this.resolveRuntimeModel(modelSummary.provider, modelSummary.id);
+        if (!model) {
+          throw new Error(
+            `Model registry could not resolve ${modelSummary.provider}/${modelSummary.id}.`,
+          );
+        }
+        return { model };
+      },
     );
 
     const existingSessionFile = this.registry.getSessionFile(
@@ -1502,6 +1649,13 @@ export class PiSessionPool {
     session.sessionManager.appendSessionInfo(sessionName);
   }
 
+  private resolveRuntimeModel(provider: string, id: string) {
+    return (
+      this.modelRegistry.find(provider, id) ??
+      fallbackModel(provider, id, this.modelRegistry.getAvailable())
+    );
+  }
+
   private resolveConfiguredModel(modelReference: string) {
     const [provider, ...rest] = modelReference.split("/");
     const id = rest.join("/").trim();
@@ -1509,7 +1663,7 @@ export class PiSessionPool {
       throw new Error("Model reference must look like provider/model-id.");
     }
 
-    const model = this.modelRegistry.find(provider, id);
+    const model = this.resolveRuntimeModel(provider, id);
     if (!model) {
       throw new Error(`Model not found: ${modelReference}`);
     }

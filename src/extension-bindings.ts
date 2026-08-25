@@ -50,7 +50,7 @@ export function createDiscordExtensionUIContext(options: ExtensionBindingOptions
     confirm: async () => false,
     input: async () => undefined,
     notify: (message, type = "info") => {
-      void emitNotification(options, type, message);
+      options.onLog?.(type, message);
     },
     onTerminalInput: () => () => undefined,
     setStatus: () => undefined,
