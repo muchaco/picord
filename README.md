@@ -2,7 +2,9 @@
 
 `picord` is a Discord integration for pi / pi-mono.
 
-npm package: `@venthezone/picord`
+Fork package identity: `@muchaco/picord`
+
+This fork targets `@earendil-works/pi-coding-agent@0.84.3` and is installed from a pinned Git commit. It is not published to npm.
 
 It lets you use pi from Discord while keeping pi’s native sessions, models, skills, and extensions.
 
@@ -103,21 +105,17 @@ That intent is required for the full message-driven guild flow.
 
 For normal use, install picord as a persistent pi extension.
 
-The published package name is:
+Install a reviewed commit through pi (replace `<commit>` with the approved full SHA):
 
 ```bash
-@venthezone/picord
+pi install git:github.com/muchaco/picord@<commit>
 ```
 
-You can install it through pi with:
-
-```bash
-pi install npm:@venthezone/picord
-```
-
-You can also use the local repo directly by either:
+For development, use the local repo directly by either:
 - adding this package path to your pi extension settings, or
-- symlinking or copying the repo into `~/.pi/agent/extensions/picord/`
+- symlinking the repo into `~/.pi/agent/extensions/picord/`
+
+Do not copy source into an installed `node_modules` tree. Agent OS builds an immutable artifact from the pinned commit instead.
 
 This repo already declares its extension entrypoint in `package.json`:
 

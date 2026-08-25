@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - name: Production package contains no nested Pi runtime
+        run: |
+          archive=$(npm pack --silent)
+          mkdir ../production-install
+          cd ../production-install
+          npm init -y >/dev/null
+          npm install --ignore-scripts --omit=dev --omit=peer "../picord/${archive}"
+          test -z "$(find node_modules -path '*/@mariozechner/pi-*' -print -quit)"
+          test -z "$(find node_modules/@muchaco/picord -path '*/node_modules/@earendil-works/pi-*' -print -quit)"

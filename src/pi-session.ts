@@ -1430,7 +1430,12 @@ export class PiSessionPool {
     const configuredPackages = projectSettings.packages ?? globalSettings.packages ?? [];
     const packagesWithoutPicord = configuredPackages.filter((entry) => {
       const source = typeof entry === "string" ? entry : entry.source;
-      return !source.includes("@venthezone/picord");
+      return ![
+        "@venthezone/picord",
+        "@muchaco/picord",
+        "VenTheZone/picord",
+        "muchaco/picord",
+      ].some((packageId) => source.includes(packageId));
     });
     const settingsManager = SettingsManager.inMemory({
       ...globalSettings,

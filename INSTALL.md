@@ -73,18 +73,23 @@ before proceeding.
 
 ## 3. Install picord into pi
 
+This fork targets Pi 0.84.3 and is not published to npm. Install a reviewed,
+immutable commit (replace `<commit>` with the approved full SHA):
+
 ```bash
-pi install npm:@venthezone/picord
+pi install git:github.com/muchaco/picord@<commit>
 pi list   # confirm picord appears in the installed packages
 ```
 
-If the user is developing picord itself, install from the local checkout
-instead:
+If the user is developing picord itself, install from the local checkout instead:
 
 ```bash
 cd /path/to/picord
-pi install ./picord
+pi install .
 ```
+
+Agent OS does not install at runtime; its image build checks out the same commit,
+runs the release gates, and copies the resulting immutable artifact.
 
 ---
 
@@ -166,7 +171,7 @@ to `true`), so no manual sync is needed.
 | Bot online but silent | Message Content Intent enabled? Bot in `allowedGuildIds`? Host channel exists? |
 | `/status` no reply | `ownerUserId` matches the user? Running in host channel? `registerCommands` true and bot re-invited after intent change? |
 | "Access denied" | Add the user to `allowedUserIds`/`allowedRoleNames`, or the agent approves via `/access-allow` as owner. |
-| Commands missing after code changes | Re-run `pi update npm:@venthezone/picord` and restart pi. |
+| Commands missing after code changes | Install the reviewed replacement commit and restart pi. |
 
 For anything else, report the exact error text to the user and ask.
 
@@ -175,7 +180,7 @@ For anything else, report the exact error text to the user and ask.
 ## Uninstall
 
 ```bash
-pi remove npm:@venthezone/picord
+pi remove git:github.com/muchaco/picord
 ```
 
 Delete `picord.state.json` to clear stored credentials (optional).
