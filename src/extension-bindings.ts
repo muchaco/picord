@@ -1,5 +1,5 @@
-import type { AgentSession, ExtensionError, ExtensionUIContext } from "@mariozechner/pi-coding-agent";
-import type { Theme } from "@mariozechner/pi-coding-agent";
+import type { AgentSession, ExtensionError, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { PiLiveUpdate } from "./live-discord-renderer.js";
 
 type SessionExtensionBindings = Parameters<AgentSession["bindExtensions"]>[0];

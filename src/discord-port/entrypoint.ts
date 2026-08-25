@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { startDiscordPortExtensionRuntime } from "./extension-bridge.js";
 
 export default function discordPortExtension(pi: ExtensionAPI) {

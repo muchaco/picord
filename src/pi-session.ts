@@ -1,5 +1,4 @@
 import {
-  AuthStorage,
   createAgentSession,
   createBashTool,
   createEditTool,
@@ -7,13 +6,14 @@ import {
   createWriteTool,
   DefaultResourceLoader,
   ModelRegistry,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
   type CompactionResult,
   type AgentSession,
   type SessionInfo,
   type Skill,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -255,8 +255,8 @@ interface PendingOAuthLogin {
 }
 
 export class PiSessionPool {
-  private readonly authStorage = AuthStorage.create();
-  private readonly modelRegistry = ModelRegistry.create(this.authStorage);
+  private modelRuntime: ModelRuntime | undefined;
+  private modelRegistry: ModelRegistry | undefined;
   private readonly storedModelSummaries = loadStoredModelSummaries();
   private readonly sessions = new Map<string, SessionHandle>();
   private readonly queues = new Map<string, Promise<unknown>>();
@@ -302,11 +302,20 @@ export class PiSessionPool {
   }
 
   async initialize(): Promise<void> {
+    if (this.modelRuntime || this.modelRegistry) {
+      throw new Error("PiSessionPool.initialize() may only be called once.");
+    }
+
+    this.modelRuntime = await ModelRuntime.create();
+    this.modelRegistry = new ModelRegistry(this.modelRuntime);
+
     // Apply model context window overrides
     if (this.config.modelOverrides) {
       for (const [modelRef, overrides] of Object.entries(this.config.modelOverrides)) {
         const [provider, id] = modelRef.includes("/") ? modelRef.split("/", 2) : ["", modelRef];
-        const model = provider ? this.modelRegistry.find(provider, id) : this.modelRegistry.getAvailable().find(m => m.id === id);
+        const model = provider
+          ? this.requireModelRegistry().find(provider, id)
+          : this.requireModelRegistry().getAvailable().find((entry) => entry.id === id);
         if (model) {
           if (overrides.contextWindow !== undefined) {
             (model as any).contextWindow = overrides.contextWindow;
@@ -337,6 +346,20 @@ export class PiSessionPool {
     }
   }
 
+  private requireModelRuntime(): ModelRuntime {
+    if (!this.modelRuntime) {
+      throw new Error("PiSessionPool must be initialized before model or auth operations.");
+    }
+    return this.modelRuntime;
+  }
+
+  private requireModelRegistry(): ModelRegistry {
+    if (!this.modelRegistry) {
+      throw new Error("PiSessionPool must be initialized before model operations.");
+    }
+    return this.modelRegistry;
+  }
+
   getSessionCount(): number {
     return this.sessions.size;
   }
@@ -349,54 +372,26 @@ export class PiSessionPool {
     supportsDiscordFlow?: boolean;
     discordFlowReason?: string;
   }> {
-    const oauthProviders = this.authStorage.getOAuthProviders();
-    const oauthIds = new Set(oauthProviders.map((provider) => provider.id));
-    const configuredProviders = new Set(this.authStorage.list());
-    const providerOptions = new Map<string, {
-      id: string;
-      name: string;
-      method: "api-key" | "oauth";
-      hasStoredAuth: boolean;
-      supportsDiscordFlow?: boolean;
-      discordFlowReason?: string;
-    }>();
-
-    for (const provider of oauthProviders) {
-      providerOptions.set(provider.id, {
+    const runtime = this.requireModelRuntime();
+    return runtime
+      .getProviders()
+      .filter((provider) => provider.auth.oauth || provider.auth.apiKey?.login)
+      .map((provider) => ({
         id: provider.id,
-        name: provider.name,
-        method: "oauth",
-        hasStoredAuth: configuredProviders.has(provider.id),
+        name: provider.name || formatProviderName(provider.id),
+        method: provider.auth.oauth ? "oauth" as const : "api-key" as const,
+        hasStoredAuth: runtime.hasConfiguredAuth(provider.id),
         supportsDiscordFlow: true,
-        discordFlowReason:
-          provider.usesCallbackServer === false
-            ? "This provider may ask follow-up questions during login instead of a browser callback, so Discord support is best-effort."
-            : undefined,
-      });
-    }
-
-    for (const model of this.getAvailableModels()) {
-      if (oauthIds.has(model.provider)) continue;
-      providerOptions.set(model.provider, {
-        id: model.provider,
-        name: formatProviderName(model.provider),
-        method: "api-key",
-        hasStoredAuth: configuredProviders.has(model.provider),
-        supportsDiscordFlow: true,
-      });
-    }
-
-    return [...providerOptions.values()].sort((left, right) =>
-      left.name.localeCompare(right.name),
-    );
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
   }
 
-  setProviderApiKey(providerId: string, apiKey: string): void {
+  async setProviderApiKey(providerId: string, apiKey: string): Promise<void> {
     const trimmed = apiKey.trim();
     if (!trimmed) {
       throw new Error("API key cannot be empty.");
     }
-    this.authStorage.set(providerId, { type: "api_key", key: trimmed });
+    await this.requireModelRuntime().setRuntimeApiKey(providerId, trimmed);
   }
 
   async startProviderOAuthLogin(
@@ -411,10 +406,9 @@ export class PiSessionPool {
       allowEmpty?: boolean;
     };
   }> {
-    const provider = this.authStorage
-      .getOAuthProviders()
-      .find((entry) => entry.id === providerId);
-    if (!provider) {
+    const runtime = this.requireModelRuntime();
+    const provider = runtime.getProvider(providerId);
+    if (!provider?.auth.oauth) {
       throw new Error(`OAuth provider is not registered: ${providerId}`);
     }
 
@@ -427,88 +421,95 @@ export class PiSessionPool {
       throw new Error(`A ${existing.providerId} login is already in progress.`);
     }
 
+    const abortController = new AbortController();
     let authUrl: string | undefined;
     let authInstructions: string | undefined;
-    let resolveCodeInput: ((input: string) => void) | undefined;
     let resolvePromptInput: ((input: string) => void) | undefined;
+    let rejectPromptInput: ((error: Error) => void) | undefined;
     let currentPrompt:
       | { message: string; placeholder?: string; allowEmpty?: boolean }
       | undefined;
 
-    const loginPromise = this.authStorage
-      .login(providerId, {
-        onAuth: ({ url, instructions }) => {
-          authUrl = url;
-          authInstructions = instructions;
+    const loginPromise = runtime
+      .login(providerId, "oauth", {
+        signal: abortController.signal,
+        notify: (event) => {
+          if (event.type === "auth_url") {
+            authUrl = event.url;
+            authInstructions = event.instructions;
+          } else if (event.type === "device_code") {
+            authUrl = event.verificationUri;
+            authInstructions = `Enter device code: ${event.userCode}`;
+          }
         },
-        onPrompt: async ({ message, placeholder, allowEmpty }) => {
+        prompt: async (prompt) => {
           if (
             providerId === "openai-codex" &&
-            message.toLowerCase().includes("login method")
+            prompt.type === "select" &&
+            prompt.message.toLowerCase().includes("login method") &&
+            prompt.options.some((option) => option.id === "headless")
           ) {
             return "headless";
           }
-          currentPrompt = { message, placeholder, allowEmpty };
+
+          const options = prompt.type === "select"
+            ? `\n${prompt.options.map((option) => `${option.id}: ${option.label}`).join("\n")}`
+            : "";
+          currentPrompt = {
+            message: `${prompt.message}${options}`,
+            placeholder: "placeholder" in prompt ? prompt.placeholder : undefined,
+            allowEmpty: false,
+          };
           const pending = this.pendingOAuthLogins.get(userId);
           if (pending) {
             pending.promptRequested = true;
             pending.currentPrompt = currentPrompt;
           }
-          return await new Promise<string>((resolve) => {
+
+          return await new Promise<string>((resolve, reject) => {
             resolvePromptInput = resolve;
+            rejectPromptInput = reject;
+            const rejectOnAbort = () => reject(new Error("OAuth login was cancelled."));
+            abortController.signal.addEventListener("abort", rejectOnAbort, { once: true });
+            prompt.signal?.addEventListener("abort", rejectOnAbort, { once: true });
           });
         },
-        onManualCodeInput: async () => {
-          return await new Promise<string>((resolve) => {
-            resolveCodeInput = resolve;
-          });
-        },
-        onProgress: () => undefined,
       })
       .then(() => undefined)
       .finally(() => {
         this.pendingOAuthLogins.delete(userId);
       });
 
+    const submitPromptInput = (input: string): void => {
+      if (!resolvePromptInput) {
+        throw new Error("OAuth login is not currently waiting for input.");
+      }
+      currentPrompt = undefined;
+      const pending = this.pendingOAuthLogins.get(userId);
+      if (pending) {
+        pending.promptRequested = false;
+        pending.currentPrompt = undefined;
+      }
+      const resolve = resolvePromptInput;
+      resolvePromptInput = undefined;
+      rejectPromptInput = undefined;
+      resolve(input);
+    };
+
     this.pendingOAuthLogins.set(userId, {
       providerId,
       promptRequested: false,
       currentPrompt,
       cancel: () => {
-        // Resolve pending promises with an error so the login flow aborts cleanly.
-        if (resolveCodeInput) {
-          resolveCodeInput("");
-        }
-        if (resolvePromptInput) {
-          resolvePromptInput("__cancelled__");
-        }
+        abortController.abort();
+        rejectPromptInput?.(new Error("OAuth login was cancelled."));
       },
-      complete: (input: string) => {
-        if (!resolveCodeInput) {
-          throw new Error(
-            "Manual code input is not currently needed for this login.",
-          );
-        }
-        resolveCodeInput(input);
-      },
-      submitPromptResponse: (input: string) => {
-        if (!resolvePromptInput) {
-          throw new Error(
-            "OAuth login is not currently waiting for a prompt response.",
-          );
-        }
-        currentPrompt = undefined;
-        const pending = this.pendingOAuthLogins.get(userId);
-        if (pending) {
-          pending.promptRequested = false;
-          pending.currentPrompt = undefined;
-        }
-        resolvePromptInput(input);
-      },
+      complete: submitPromptInput,
+      submitPromptResponse: submitPromptInput,
       promise: loginPromise,
     });
 
-    for (let i = 0; i < 50; i += 1) {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
       if (authUrl) {
         return {
           url: authUrl,
@@ -519,6 +520,7 @@ export class PiSessionPool {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
+    abortController.abort();
     this.pendingOAuthLogins.delete(userId);
     throw new Error(`${provider.name} login could not be started.`);
   }
@@ -1133,7 +1135,7 @@ export class PiSessionPool {
   }
 
   getAvailableModels(): ModelSummary[] {
-    const available = this.modelRegistry.getAvailable();
+    const available = this.requireModelRegistry().getAvailable();
     const configuredProviders = new Set(available.map((model) => model.provider));
     const summaries: ModelSummary[] = [];
     const knownReferences = new Set<string>();
@@ -1562,8 +1564,7 @@ export class PiSessionPool {
         options.conversationKey,
         options.workspaceKey,
       ),
-      authStorage: this.authStorage,
-      modelRegistry: this.modelRegistry,
+      modelRuntime: this.requireModelRuntime(),
       resourceLoader: workspaceState.resourceLoader,
       noTools: "builtin",
       customTools: [
@@ -1650,10 +1651,8 @@ export class PiSessionPool {
   }
 
   private resolveRuntimeModel(provider: string, id: string) {
-    return (
-      this.modelRegistry.find(provider, id) ??
-      fallbackModel(provider, id, this.modelRegistry.getAvailable())
-    );
+    const registry = this.requireModelRegistry();
+    return registry.find(provider, id) ?? fallbackModel(provider, id, registry.getAvailable());
   }
 
   private resolveConfiguredModel(modelReference: string) {
@@ -1668,7 +1667,7 @@ export class PiSessionPool {
       throw new Error(`Model not found: ${modelReference}`);
     }
 
-    if (!this.modelRegistry.hasConfiguredAuth(model)) {
+    if (!this.requireModelRegistry().hasConfiguredAuth(model)) {
       throw new Error(`Model is not configured for auth: ${modelReference}`);
     }
 

@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
-import { getModels, type Api, type Model } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { getModels } from "@earendil-works/pi-ai/compat";
 import { getOAuthProvider, getOAuthProviders } from "./oauth-compat.js";
 import { AuthWriter } from "./auth-writer.js";
 import { resolveAgentRuntimePath } from "./runtime-paths.js";

@@ -1,6 +1,6 @@
 {
-  "name": "@venthezone/picord",
-  "version": "0.4.0",
+  "name": "@muchaco/picord",
+  "version": "0.4.0-muchaco.1",
   "type": "module",
   "description": "Discord integration extension for pi that maps project channels to workspaces and threads to native pi sessions.",
   "keywords": [
@@ -14,11 +14,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/VenTheZone/picord.git"
+    "url": "git+https://github.com/muchaco/picord.git"
   },
-  "homepage": "https://github.com/VenTheZone/picord#readme",
+  "homepage": "https://github.com/muchaco/picord#readme",
   "bugs": {
-    "url": "https://github.com/VenTheZone/picord/issues"
+    "url": "https://github.com/muchaco/picord/issues"
   },
   "files": [
     "src/**/*.ts",
@@ -38,7 +38,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . --ext .ts",
     "test": "vitest --run --passWithNoTests",
-    "check": "npm run lint && npm run typecheck && npm run test",
+    "check:deps": "node scripts/check-dependency-boundary.mjs",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build && npm run check:deps",
     "doctor": "npm run build && node dist/doctor.js",
     "smoke:discord": "npm run build && node dist/discord-smoke.js",
     "sync:discord-commands": "npm run build && node dist/discord-sync-commands.js",
@@ -59,13 +60,12 @@
     "proper-lockfile": "^4.1.2"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@sinclair/typebox": "*"
+    "@earendil-works/pi-ai": ">=0.84.3 <0.85.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.3 <0.85.0",
+    "typebox": ">=1.3.7 <2.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",
-    "@mariozechner/pi-coding-agent": "^0.73.1",
-    "@sinclair/typebox": "^0.34.41",
     "@types/node": "^24.3.0",
     "@types/proper-lockfile": "^4.1.4",
     "@typescript-eslint/eslint-plugin": "^8.30.1",
@@ -73,9 +73,23 @@
     "eslint": "^9.24.0",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.30.1",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@earendil-works/pi-ai": "0.84.3",
+    "@earendil-works/pi-coding-agent": "0.84.3",
+    "typebox": "1.3.7"
   },
   "engines": {
-    "node": ">=20.6.0"
+    "node": ">=22.19.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   }
 }

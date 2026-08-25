@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage } from "@mariozechner/pi-ai";
+import type { Api, AssistantMessage } from "@earendil-works/pi-ai";
 import type { OAuthCredentials } from "./oauth-compat.js";
 import type { ProviderCascadeState } from "./types-cascade.js";
 import type { FailoverChain, FailoverChainState } from "./types-failover.js";

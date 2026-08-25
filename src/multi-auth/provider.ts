@@ -5,12 +5,11 @@ import {
 	type AssistantMessageEventStream,
 	type Context,
 	createAssistantMessageEventStream,
-	getApiProvider,
 	type Model,
-	registerApiProvider,
 	type SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-ai";
+import { getApiProvider, registerApiProvider } from "@earendil-works/pi-ai/compat";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	AccountManager,
 	createCredentialSelectionCache,

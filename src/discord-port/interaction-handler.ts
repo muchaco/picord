@@ -1338,7 +1338,7 @@ export function registerDiscordPortInteractionHandler({
             LOGIN_API_KEY_MODAL_PREFIX.length,
           );
           const apiKey = interaction.fields.getTextInputValue("apiKey");
-          runtime.adapter.setProviderApiKey(providerId, apiKey);
+          await runtime.adapter.setProviderApiKey(providerId, apiKey);
           const messages = [`✅ Stored API key for **${providerId}**.`];
           if (!isEncryptionAvailable()) {
             messages.push(
@@ -1596,7 +1596,7 @@ export function registerDiscordPortInteractionHandler({
           }
 
           if (provider.method === "api-key") {
-            runtime.adapter.setProviderApiKey(provider.id, keyOpt);
+            await runtime.adapter.setProviderApiKey(provider.id, keyOpt);
             const messages = [
               `✅ Saved API key for **${provider.name}**. Your key is stored in auth.json and excluded from git.`,
             ];

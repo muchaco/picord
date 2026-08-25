@@ -147,8 +147,8 @@ export class PiSessionPoolAdapter implements DiscordPortRuntimeAdapter {
     return this.sessionPool.listLoginProviders();
   }
 
-  setProviderApiKey(providerId: string, apiKey: string): void {
-    this.sessionPool.setProviderApiKey(providerId, apiKey);
+  async setProviderApiKey(providerId: string, apiKey: string): Promise<void> {
+    await this.sessionPool.setProviderApiKey(providerId, apiKey);
   }
 
   startProviderOAuthLogin(providerId: string, userId: string): Promise<{ url: string; instructions?: string; pendingPrompt?: { message: string; placeholder?: string; allowEmpty?: boolean } }> {

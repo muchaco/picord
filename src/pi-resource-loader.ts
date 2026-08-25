@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { LoadExtensionsResult } from "@mariozechner/pi-coding-agent";
+import type { LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
 
 function canonicalPath(input: string): string {
   try {

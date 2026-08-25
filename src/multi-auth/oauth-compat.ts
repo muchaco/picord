@@ -1,11 +1,17 @@
-import {
-	getOAuthProvider as getOAuthProviderFromPiAi,
-	getOAuthProviders as getOAuthProvidersFromPiAi,
-	type OAuthCredentials,
-	type OAuthLoginCallbacks,
-	type OAuthProviderId,
-	type OAuthProviderInterface,
-} from "@mariozechner/pi-ai/oauth";
+import type {
+	OAuthCredentials,
+	OAuthLoginCallbacks,
+} from "@earendil-works/pi-ai/oauth";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+
+export type OAuthProviderId = string;
+
+export interface OAuthProviderInterface {
+	id: string;
+	name: string;
+	login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
+	refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+}
 import { extractCodexCredentialIdentity } from "./openai-codex-identity.js";
 import { determineTokenExpiration } from "./oauth-refresh-scheduler.js";
 import {
@@ -265,14 +271,72 @@ async function refreshOpenAICodexCredential(
  * pi-ai publishes the oauth module through import-only package exports. Direct ESM
  * imports work across current Pi builds and avoid ERR_PACKAGE_PATH_NOT_EXPORTED.
  */
-export function getOAuthProvider(
-	id: OAuthProviderId,
-): OAuthProviderInterface | undefined {
-	return getOAuthProviderFromPiAi(id);
+function adaptOAuthProvider(provider: ReturnType<typeof builtinProviders>[number]): OAuthProviderInterface | undefined {
+	const oauth = provider.auth.oauth;
+	if (!oauth) return undefined;
+
+	return {
+		id: provider.id,
+		name: provider.name,
+		async login(callbacks) {
+			const fallbackController = new AbortController();
+			return oauth.login({
+				signal: callbacks.signal ?? fallbackController.signal,
+				notify(event) {
+					switch (event.type) {
+						case "auth_url":
+							callbacks.onAuth({ url: event.url, instructions: event.instructions });
+							break;
+						case "device_code":
+							callbacks.onDeviceCode(event);
+							break;
+						case "progress":
+							callbacks.onProgress?.(event.message);
+							break;
+						case "info":
+							callbacks.onProgress?.(event.message);
+							break;
+					}
+				},
+				async prompt(prompt) {
+					if (prompt.type === "select") {
+						const selected = await callbacks.onSelect({
+							message: prompt.message,
+							options: prompt.options.map(({ id, label }) => ({ id, label })),
+						});
+						if (!selected) throw new Error("OAuth selection was cancelled.");
+						return selected;
+					}
+					if (prompt.type === "manual_code" && callbacks.onManualCodeInput) {
+						return callbacks.onManualCodeInput();
+					}
+					return callbacks.onPrompt({
+						message: prompt.message,
+						placeholder: prompt.placeholder,
+						allowEmpty: false,
+					});
+				},
+			});
+		},
+		async refreshToken(credentials) {
+			return oauth.refresh(
+				{ type: "oauth", ...credentials },
+				new AbortController().signal,
+			);
+		},
+	};
+}
+
+const oauthProviders = builtinProviders()
+	.map(adaptOAuthProvider)
+	.filter((provider): provider is OAuthProviderInterface => provider !== undefined);
+
+export function getOAuthProvider(id: OAuthProviderId): OAuthProviderInterface | undefined {
+	return oauthProviders.find((provider) => provider.id === id);
 }
 
 export function getOAuthProviders(): OAuthProviderInterface[] {
-	return getOAuthProvidersFromPiAi();
+	return [...oauthProviders];
 }
 
 export interface OAuthRefreshExecutionOptions {
@@ -294,7 +358,7 @@ export async function refreshOAuthCredential(
 		return refreshOpenAICodexCredential(credentials, requestTimeoutMs);
 	}
 
-	const provider = getOAuthProviderFromPiAi(providerId);
+	const provider = getOAuthProvider(providerId);
 	if (!provider) {
 		throw new OAuthRefreshFailureError(
 			`OAuth provider is not available for token refresh: ${providerId}`,

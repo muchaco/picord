@@ -14,8 +14,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { homedir } from "os";
-import { Type, type TSchema, type Static } from "@sinclair/typebox";
-import type { ToolDefinition, AgentToolResult } from "@mariozechner/pi-coding-agent";
+import { Type, type TSchema, type Static } from "typebox";
+import type { ToolDefinition, AgentToolResult } from "@earendil-works/pi-coding-agent";
 
 // MCP SDK module references (loaded dynamically)
 type MCPModule = {

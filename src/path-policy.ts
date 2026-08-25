@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { BashOperations, EditOperations, LsOperations, ReadOperations, WriteOperations } from "@mariozechner/pi-coding-agent";
-import { createLocalBashOperations } from "@mariozechner/pi-coding-agent";
+import type { BashOperations, EditOperations, LsOperations, ReadOperations, WriteOperations } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { AccessApprovalManager } from "./access-approval.js";
 
 export interface AccessContext {

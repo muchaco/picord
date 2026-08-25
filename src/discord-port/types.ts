@@ -76,7 +76,7 @@ export interface DiscordPortRuntimeAdapter {
   setCavemanLevel(conversationKey: string, level: CavemanLevel): void;
   getEffectiveCavemanLevel(conversationKey: string): CavemanLevel;
   listLoginProviders(): LoginProviderOption[];
-  setProviderApiKey(providerId: string, apiKey: string): void;
+  setProviderApiKey(providerId: string, apiKey: string): Promise<void>;
   startProviderOAuthLogin(providerId: string, userId: string): Promise<{ url: string; instructions?: string; pendingPrompt?: { message: string; placeholder?: string; allowEmpty?: boolean } }>;
   getPendingOAuthPrompt(providerId: string, userId: string): { message: string; placeholder?: string; allowEmpty?: boolean } | undefined;
   submitProviderOAuthPrompt(providerId: string, userId: string, input: string): void;

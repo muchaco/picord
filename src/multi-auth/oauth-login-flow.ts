@@ -1,4 +1,4 @@
-import { LoginDialogComponent, type ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { LoginDialogComponent, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { AccountManager } from "./account-manager.js";
 import type { OAuthLoginCallbacks } from "./oauth-compat.js";
 import type { SupportedProviderId } from "./types.js";
@@ -70,6 +70,10 @@ export class OAuthDialogCallbackBridge {
 				this.hasShownWaitingState = false;
 				this.dialog.showAuth(url, instructions);
 			},
+			onDeviceCode: ({ userCode, verificationUri }) => {
+				this.hasShownWaitingState = false;
+				this.dialog.showAuth(verificationUri, `Enter device code: ${userCode}`);
+			},
 			onPrompt: async ({ message, placeholder, allowEmpty }) => {
 				this.hasShownWaitingState = false;
 				const value = await this.dialog.showPrompt(message, placeholder);
@@ -77,6 +81,15 @@ export class OAuthDialogCallbackBridge {
 					return value;
 				}
 				return requireOAuthInput(value, "OAuth input is required to continue login.");
+			},
+			onSelect: async ({ message, options }) => {
+				this.hasShownWaitingState = false;
+				const optionText = options.map((option) => `${option.id}: ${option.label}`).join("\n");
+				const selected = requireOAuthInput(
+					await this.dialog.showPrompt(`${message}\n${optionText}`),
+					"OAuth selection is required to continue login.",
+				);
+				return options.some((option) => option.id === selected) ? selected : undefined;
 			},
 			onProgress: (message) => {
 				const normalizedMessage = message.trim();

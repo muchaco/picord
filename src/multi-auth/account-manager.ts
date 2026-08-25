@@ -1,4 +1,4 @@
-import type { Api } from "@mariozechner/pi-ai";
+import type { Api } from "@earendil-works/pi-ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "./oauth-compat.js";
 import { getOAuthProvider, refreshOAuthCredential } from "./oauth-compat.js";
 import { CascadeStateManager } from "./cascade-state.js";

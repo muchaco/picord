@@ -1,4 +1,4 @@
-import type { Api } from "@mariozechner/pi-ai";
+import type { Api } from "@earendil-works/pi-ai";
 import type { CredentialErrorKind } from "./error-classifier.js";
 import type { SupportedProviderId } from "./types.js";
 
