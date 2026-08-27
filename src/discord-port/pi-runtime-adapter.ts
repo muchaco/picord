@@ -261,6 +261,16 @@ export class PiSessionPoolAdapter implements DiscordPortRuntimeAdapter {
       : this.sessionPool.steer(conversationKey, text);
   }
 
+  followUp(
+    conversationKey: string,
+    text: string,
+    promptContent?: PromptImageContent[],
+  ): Promise<boolean> {
+    return promptContent?.length
+      ? this.sessionPool.followUp(conversationKey, text, promptContent)
+      : this.sessionPool.followUp(conversationKey, text);
+  }
+
   waitForRespondDone(conversationKey: string): Promise<void> {
     return this.sessionPool.waitForRespondDone(conversationKey);
   }

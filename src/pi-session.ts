@@ -111,6 +111,18 @@ export async function steerAgentSession(
   await session.steer(text);
 }
 
+export async function followUpAgentSession(
+  session: Pick<AgentSession, "followUp">,
+  text: string,
+  images: PromptImageContent[] = [],
+): Promise<void> {
+  if (images.length > 0) {
+    await session.followUp(text, images);
+    return;
+  }
+  await session.followUp(text);
+}
+
 export function assertRespondCanStart(
   conversationKey: string,
   state: "respond-active" | "session-streaming" | "idle",
@@ -680,6 +692,17 @@ export class PiSessionPool {
     const handle = this.sessions.get(conversationKey);
     if (!handle) return false;
     await steerAgentSession(handle.session, text, images);
+    return true;
+  }
+
+  async followUp(
+    conversationKey: string,
+    text: string,
+    images: PromptImageContent[] = [],
+  ): Promise<boolean> {
+    const handle = this.sessions.get(conversationKey);
+    if (!handle) return false;
+    await followUpAgentSession(handle.session, text, images);
     return true;
   }
 

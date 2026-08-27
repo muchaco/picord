@@ -307,8 +307,19 @@ export function registerDiscordPortBot({
           }
 
           const binding = runtime.bindThread(thread);
+          const isFirstThreadMessage = !runtime.adapter.hasBoundSession(
+            binding.conversationKey,
+          );
+          const threadStarterMessage = isFirstThreadMessage
+            ? await thread.fetchStarterMessage()
+            : undefined;
 
-          const messagePrompt = await buildPromptFromDiscordMessage(message, promptText, runtime.adapter.config);
+          const messagePrompt = await buildPromptFromDiscordMessage(
+            message,
+            promptText,
+            runtime.adapter.config,
+            threadStarterMessage ?? undefined,
+          );
           if (
             await steerActiveDiscordRun(
               runtime.adapter,

@@ -3,7 +3,9 @@ import type { SkillSummary } from "../types.js";
 
 const RESERVED_COMMAND_NAMES = new Set([
   "ask",
+  "queue",
   "abort",
+  "stop",
   "reset",
   "refresh-session",
   "resume",
@@ -59,6 +61,19 @@ function buildAskCommand(): RESTPostAPIChatInputApplicationCommandsJSONBody {
       option
         .setName("prompt")
         .setDescription("Prompt to send to pi")
+        .setRequired(true),
+    )
+    .toJSON();
+}
+
+function buildQueueCommand(): RESTPostAPIChatInputApplicationCommandsJSONBody {
+  return new SlashCommandBuilder()
+    .setName("queue")
+    .setDescription("Queue a prompt to run after pi finishes current work")
+    .addStringOption((option) =>
+      option
+        .setName("prompt")
+        .setDescription("Prompt to queue for pi")
         .setRequired(true),
     )
     .toJSON();
@@ -257,10 +272,12 @@ function buildSessionCommand(): RESTPostAPIChatInputApplicationCommandsJSONBody 
     .toJSON();
 }
 
-function buildAbortCommand(): RESTPostAPIChatInputApplicationCommandsJSONBody {
+function buildAbortCommand(
+  commandName: "abort" | "stop" = "abort",
+): RESTPostAPIChatInputApplicationCommandsJSONBody {
   return new SlashCommandBuilder()
-    .setName("abort")
-    .setDescription("Abort the active pi run in the current thread")
+    .setName(commandName)
+    .setDescription("Stop the active pi run and keep this thread session")
     .toJSON();
 }
 
@@ -351,9 +368,22 @@ function buildStatusCommand(): RESTPostAPIChatInputApplicationCommandsJSONBody {
     .toJSON();
 }
 
+export function dedupeDiscordCommands(
+  commands: RESTPostAPIChatInputApplicationCommandsJSONBody[],
+): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
+  const uniqueCommands = new Map<string, RESTPostAPIChatInputApplicationCommandsJSONBody>();
+  for (const command of commands) {
+    if (!uniqueCommands.has(command.name)) {
+      uniqueCommands.set(command.name, command);
+    }
+  }
+  return [...uniqueCommands.values()];
+}
+
 export function buildDiscordPortCommands(skills: SkillSummary[] = []): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
-  return [
+  const commands = [
     buildAskCommand(),
+    buildQueueCommand(),
     buildScopeModelsCommand(),
     buildUseModelCommand(),
     buildUseModelCommand("model"),
@@ -370,6 +400,7 @@ export function buildDiscordPortCommands(skills: SkillSummary[] = []): RESTPostA
     buildSessionCommand(),
     buildSessionsCommand(),
     buildAbortCommand(),
+    buildAbortCommand("stop"),
     buildResetCommand(),
     buildRefreshSessionCommand(),
     buildProjectListCommand(),
@@ -383,4 +414,6 @@ export function buildDiscordPortCommands(skills: SkillSummary[] = []): RESTPostA
     buildAutoCompactCommand(),
     ...skills.map(buildSkillCommand).filter((command): command is RESTPostAPIChatInputApplicationCommandsJSONBody => Boolean(command)),
   ];
+
+  return dedupeDiscordCommands(commands);
 }

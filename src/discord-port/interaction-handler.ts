@@ -605,6 +605,17 @@ async function checkInteractionAccess(
       });
 }
 
+export async function abortActiveSession(
+  adapter: Pick<DiscordPortRuntime["adapter"], "abort" | "waitForRespondDone">,
+  conversationKey: string,
+): Promise<boolean> {
+  const aborted = await adapter.abort(conversationKey);
+  // Abort the native session first, then wait until respond() has released its
+  // per-conversation guard. The binding stays intact for the next message.
+  await adapter.waitForRespondDone(conversationKey);
+  return aborted;
+}
+
 export async function abortAndResetSession(
   adapter: Pick<DiscordPortRuntime["adapter"], "abort" | "reset">,
   conversationKey: string,
@@ -2014,6 +2025,53 @@ export function registerDiscordPortInteractionHandler({
         return;
       }
 
+      if (interaction.commandName === "queue") {
+        const thread = requireSessionThreadIfGuild(interaction);
+        const workspaceKey = runtime.getWorkspaceKeyForLocation({
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          thread,
+        });
+        const conversationKey = runtime.getConversationKeyForLocation({
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          thread,
+        });
+        const sessionName = runtime.getSessionNameForLocation({
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          username: interaction.user.username,
+          thread,
+        });
+        const promptText = interaction.options.getString("prompt", true).trim();
+        if (!promptText) {
+          await interaction.reply({
+            content: "Prompt cannot be empty.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        await runtime.adapter.reconnectSession({
+          conversationKey,
+          workspaceKey,
+          sessionName,
+        });
+        const queued = await runtime.adapter.followUp(
+          conversationKey,
+          buildPromptFromInteraction(interaction, promptText),
+        );
+        if (!queued) {
+          throw new Error("Could not queue prompt because no pi session is available.");
+        }
+
+        await interaction.editReply({
+          content: "Queued. Pi will process it after the current work finishes.",
+        });
+        return;
+      }
+
       if (interaction.commandName === "resume") {
         requireGuild(interaction);
         const thread = requireThread(interaction);
@@ -2094,15 +2152,21 @@ export function registerDiscordPortInteractionHandler({
         return;
       }
 
-      if (interaction.commandName === "abort") {
+      if (
+        interaction.commandName === "abort" ||
+        interaction.commandName === "stop"
+      ) {
         requireGuild(interaction);
         const thread = requireThread(interaction);
         const binding = runtime.bindThread(thread);
-        const aborted = await runtime.adapter.abort(binding.conversationKey);
+        const aborted = await abortActiveSession(
+          runtime.adapter,
+          binding.conversationKey,
+        );
         await interaction.reply({
           content: aborted
-            ? "Active run aborted."
-            : "No active session to abort.",
+            ? "Active run stopped. The thread session is preserved; send the correction when ready."
+            : "No active run to stop. The thread session is preserved.",
           flags: MessageFlags.Ephemeral,
         });
         return;

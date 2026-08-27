@@ -13,7 +13,7 @@ import {
 import { RuntimeLock } from "../runtime-lock.js";
 import { sendTextResponse } from "./message-helpers.js";
 import { PiSessionPoolAdapter } from "./pi-runtime-adapter.js";
-import { buildDiscordPortCommands } from "./command-registration.js";
+import { buildDiscordPortCommands, dedupeDiscordCommands } from "./command-registration.js";
 import { buildAllMultiAuthCommands } from "./multi-auth-commands.js";
 import { createDiscordPortClient, startDiscordPortBot, truncateErrorMessage } from "./discord-bot.js";
 import {
@@ -224,11 +224,13 @@ export async function startDiscordPortExtensionRuntime({
         // ignore errors
       }
     }
-    const commands = [
+    const commands = dedupeDiscordCommands([
       ...buildDiscordPortCommands(skillSummaries),
       ...buildAllMultiAuthCommands(providerList),
-    ];
+    ]);
     if (config.allowedGuildIds.length > 0) {
+      // Remove commands left in the global scope when switching to guild-scoped registration.
+      await discordClient.application.commands.set([]);
       await Promise.all(config.allowedGuildIds.map((guildId) => discordClient.application!.commands.set(commands, guildId)));
       return;
     }

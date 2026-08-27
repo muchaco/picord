@@ -285,6 +285,8 @@ Requires `@modelcontextprotocol/sdk` with streamable HTTP transport support (v1.
 
 That is the main flow for normal project use.
 
+Normal messages sent during an active run steer the current session. Use `/queue` when you want the next instruction to wait until pi fully finishes the current work.
+
 Use the host control channel for owner and admin actions like:
 - `/project-create`
 - `/add-project`
@@ -314,7 +316,8 @@ This is useful for quick personal tasks when you do not need a guild project cha
 ### Session and workspace
 
 - `/ask prompt:<text>`
-- `/abort`
+- `/queue prompt:<text>` — queue a native pi follow-up to run after current work finishes
+- `/stop` (alias: `/abort`) — stop the active run and preserve the thread session
 - `/refresh-session`
 - `/resume session:<session-file-or-id>`
 - `/sessions`

@@ -110,6 +110,7 @@ export interface DiscordPortRuntimeAdapter {
   resolveAccessRequest(requestId: string, mode: ApprovalDecisionMode): AccessRequest | undefined;
   isStreaming(conversationKey: string): boolean;
   steer(conversationKey: string, text: string, promptContent?: PromptImageContent[]): Promise<boolean>;
+  followUp(conversationKey: string, text: string, promptContent?: PromptImageContent[]): Promise<boolean>;
   abort(conversationKey: string): Promise<boolean>;
   waitForRespondDone(conversationKey: string): Promise<void>;
   reset(conversationKey: string): Promise<boolean>;

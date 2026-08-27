@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { assertRespondCanStart, steerAgentSession } from "./pi-session.js";
+import { assertRespondCanStart, followUpAgentSession, steerAgentSession } from "./pi-session.js";
 
 describe("Pi session steering", () => {
   test("steering does not abort a running Bash tool", async () => {
@@ -22,6 +22,34 @@ describe("Pi session steering", () => {
     await steerAgentSession(session, "second");
 
     expect(session.steer.mock.calls).toEqual([["first"], ["second"]]);
+  });
+});
+
+describe("Pi session follow-up queueing", () => {
+  test("follow-up queues work without aborting a running Bash tool", async () => {
+    const session = {
+      followUp: vi.fn(async () => undefined),
+      abortBash: vi.fn(),
+      isBashRunning: true,
+    };
+
+    await followUpAgentSession(session, "after this");
+
+    expect(session.followUp).toHaveBeenCalledWith("after this");
+    expect(session.abortBash).not.toHaveBeenCalled();
+  });
+
+  test("native image content is passed to the follow-up queue", async () => {
+    const session = { followUp: vi.fn(async () => undefined) };
+    const image = {
+      type: "image" as const,
+      data: "iVBORw0KGgo=",
+      mimeType: "image/png" as const,
+    };
+
+    await followUpAgentSession(session, "inspect later", [image]);
+
+    expect(session.followUp).toHaveBeenCalledWith("inspect later", [image]);
   });
 });
 

@@ -1,7 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 import type { PiSessionPool } from "../pi-session.js";
 import type { PicordRuntimeConfig } from "../types.js";
-import { abortAndResetSession } from "./interaction-handler.js";
+import {
+  abortActiveSession,
+  abortAndResetSession,
+} from "./interaction-handler.js";
 import { PiSessionPoolAdapter } from "./pi-runtime-adapter.js";
 
 function deferred<T>() {
@@ -17,6 +20,7 @@ function createAdapter(overrides: Partial<PiSessionPool> = {}) {
     respond: vi.fn(),
     abort: vi.fn(async () => true),
     steer: vi.fn(async () => true),
+    followUp: vi.fn(async () => true),
     hasSessionBinding: vi.fn(() => true),
     ...overrides,
   } as unknown as PiSessionPool;
@@ -72,12 +76,50 @@ describe("Discord agent runs", () => {
     );
   });
 
+  test("follow-up forwards native image content to the session pool", async () => {
+    const { adapter, pool } = createAdapter();
+    const image = {
+      type: "image" as const,
+      data: "iVBORw0KGgo=",
+      mimeType: "image/png" as const,
+    };
+
+    await expect(
+      adapter.followUp(request.conversationKey, "later", [image]),
+    ).resolves.toBe(true);
+
+    expect(pool.followUp).toHaveBeenCalledWith(
+      request.conversationKey,
+      "later",
+      [image],
+    );
+  });
+
   test("explicit cancellation still aborts the current run", async () => {
     const { adapter, pool } = createAdapter();
 
     await expect(adapter.abort(request.conversationKey)).resolves.toBe(true);
 
     expect(pool.abort).toHaveBeenCalledWith(request.conversationKey);
+  });
+
+  test("stopping waits for respond() while preserving the session", async () => {
+    let respondDone = false;
+    const abort = vi.fn(async () => true);
+    const waitForRespondDone = vi.fn(async () => {
+      respondDone = true;
+    });
+
+    await expect(
+      abortActiveSession(
+        { abort, waitForRespondDone },
+        request.conversationKey,
+      ),
+    ).resolves.toBe(true);
+
+    expect(abort).toHaveBeenCalledWith(request.conversationKey);
+    expect(waitForRespondDone).toHaveBeenCalledWith(request.conversationKey);
+    expect(respondDone).toBe(true);
   });
 
   test("session refresh remains an abort followed by reset", async () => {

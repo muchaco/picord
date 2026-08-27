@@ -158,10 +158,14 @@ export class DiscordPortRuntime {
 
   async continueThread({ thread, message }: { thread: ThreadChannel; message: Message }): Promise<string> {
     const binding = this.bindThread(thread);
+    const threadStarterMessage = !this.adapter.hasBoundSession(binding.conversationKey)
+      ? await thread.fetchStarterMessage()
+      : undefined;
     const basePrompt = await buildPromptFromDiscordMessage(
       message,
       message.content.trim(),
       this.adapter.config,
+      threadStarterMessage ?? undefined,
     );
     return this.adapter.respond({
       conversationKey: binding.conversationKey,

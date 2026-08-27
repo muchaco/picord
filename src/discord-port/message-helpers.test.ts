@@ -28,6 +28,40 @@ const config = {
   voiceTranscription: { enabled: false },
 } as unknown as PicordRuntimeConfig;
 
+describe("Discord message prompt context", () => {
+  test("a thread starter message is included before the first user message", async () => {
+    const starter = {
+      author: { tag: "Hugo#1573", id: "bot-1" },
+      guild: null,
+      channel: { id: "thread-1", isThread: () => true, name: "scheduled report" },
+      createdAt: new Date("2026-08-27T06:57:00.000Z"),
+      content: "A scheduled report needs review.",
+      attachments: new Map(),
+    } as unknown as Message;
+    const userMessage = {
+      author: { tag: "Ada#0001", id: "42" },
+      guild: null,
+      channel: { id: "thread-1", isThread: () => true, name: "scheduled report" },
+      createdAt: new Date("2026-08-27T06:57:08.000Z"),
+      content: "teszt folytatás",
+      attachments: new Map(),
+    } as unknown as Message;
+
+    const prompt = await buildPromptFromDiscordMessage(
+      userMessage,
+      "teszt folytatás",
+      config,
+      starter,
+    );
+
+    expect(prompt.text.indexOf("[Discord thread starter message]")).toBeGreaterThanOrEqual(0);
+    expect(prompt.text.indexOf("A scheduled report needs review.")).toBeGreaterThanOrEqual(0);
+    expect(prompt.text.indexOf("teszt folytatás")).toBeGreaterThan(
+      prompt.text.indexOf("A scheduled report needs review."),
+    );
+  });
+});
+
 describe("Discord image prompt content", () => {
   test("a valid image attachment becomes native image content instead of URL-only metadata", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(PNG_SIGNATURE, {

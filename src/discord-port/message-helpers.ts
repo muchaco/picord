@@ -81,13 +81,17 @@ async function fetchDiscordImage(
   };
 }
 
-export function buildPromptFromMessage(message: Message, promptText: string): string {
+export function buildPromptFromMessage(
+  message: Message,
+  promptText: string,
+  label = "[Discord message]",
+): string {
   const attachments = [...message.attachments.values()]
     .map((attachment) => `- ${attachment.name ?? "attachment"}: ${attachment.url}`)
     .join("\n");
 
   return [
-    "[Discord message]",
+    label,
     `Author: ${message.author.tag} (${message.author.id})`,
     message.guild ? `Guild: ${message.guild.name} (${message.guild.id})` : "Guild: DM",
     `Channel: ${message.channel.id}`,
@@ -103,6 +107,7 @@ export async function buildPromptFromDiscordMessage(
   message: Message,
   promptText: string,
   config: PicordRuntimeConfig,
+  threadStarterMessage?: Message,
 ): Promise<PromptInput> {
   const imageAttachments = [...message.attachments.values()].filter(
     (attachment) => attachment.contentType?.toLowerCase().startsWith("image/"),
@@ -125,11 +130,22 @@ export async function buildPromptFromDiscordMessage(
       ].join("\n")
     : "";
 
+  const currentMessagePrompt = buildPromptFromMessage(
+    message,
+    [promptText, transcriptionText].filter(Boolean).join("\n\n"),
+  );
+  const starterPrompt = threadStarterMessage
+    ? buildPromptFromMessage(
+        threadStarterMessage,
+        threadStarterMessage.content.trim(),
+        "[Discord thread starter message]",
+      )
+    : undefined;
+
   return {
-    text: buildPromptFromMessage(
-      message,
-      [promptText, transcriptionText].filter(Boolean).join("\n\n"),
-    ),
+    text: [starterPrompt, currentMessagePrompt]
+      .filter((part): part is string => Boolean(part))
+      .join("\n\n"),
     content,
   };
 }

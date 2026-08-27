@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits } from "discord.js";
 import path from "node:path";
 import { loadRuntimeConfig } from "./config.js";
-import { buildDiscordPortCommands } from "./discord-port/command-registration.js";
+import { buildDiscordPortCommands, dedupeDiscordCommands } from "./discord-port/command-registration.js";
 import { buildAllMultiAuthCommands } from "./discord-port/multi-auth-commands.js";
 import { PiSessionPool } from "./pi-session.js";
 import { initMultiAuthConfig } from "./multi-auth/multi-auth-config.js";
@@ -49,10 +49,10 @@ async function main(): Promise<void> {
       throw new Error("Discord application metadata is unavailable after login.");
     }
 
-    const commands = [
+    const commands = dedupeDiscordCommands([
       ...buildDiscordPortCommands(sessionPool.getSkillSummaries()),
       ...buildAllMultiAuthCommands(providerList),
-    ];
+    ]);
 
     console.log("PICORD COMMAND SYNC");
     console.log("===================");
@@ -60,6 +60,8 @@ async function main(): Promise<void> {
     console.log(`Commands to register: ${commands.length}`);
 
     if (config.allowedGuildIds.length > 0) {
+      // Remove commands left in the global scope when switching to guild-scoped registration.
+      await client.application.commands.set([]);
       for (const guildId of config.allowedGuildIds) {
         await client.application.commands.set(commands, guildId);
         const registered = await client.application.commands.fetch({ guildId });
