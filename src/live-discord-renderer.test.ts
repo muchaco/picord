@@ -132,6 +132,26 @@ describe("Discord live report rendering", () => {
     expect(renderer.isFinalDeliverySuccessful()).toBe(true);
   });
 
+  test("finalize does not redeliver an already streamed final chunk after progress reports", async () => {
+    const recording = createRecordingTarget();
+    const renderer = new LiveDiscordRunRenderer(recording.target);
+    await renderer.showThinkingPlaceholder();
+
+    await renderer.onUpdate({ type: "assistant_delta", delta: "Köztes állapot." });
+    await renderer.onUpdate({ type: "assistant_chunk_end" });
+    await renderer.onUpdate({ type: "assistant_delta", delta: "Végső riport." });
+    await renderer.onUpdate({ type: "assistant_chunk_end" });
+
+    await renderer.finalize("Végső riport.");
+
+    expect(recording.messages).toEqual([
+      "Köztes állapot.",
+      "Végső riport.",
+      "🟢 Készen vagyok (1 perc)",
+    ]);
+    expect(recording.messages.filter((message) => message === "Végső riport.")).toHaveLength(1);
+  });
+
   test("a missing working status falls back to a new report message", async () => {
     const reports: string[] = [];
     const renderer = new LiveDiscordRunRenderer({

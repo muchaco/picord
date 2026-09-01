@@ -491,9 +491,7 @@ export class LiveDiscordRunRenderer {
       this.statusTimer = undefined;
     }
 
-    const finalReport = finalResponse.startsWith(this.deliveredAssistantText)
-      ? finalResponse.slice(this.deliveredAssistantText.length).trim()
-      : finalResponse;
+    const finalReport = this.undeliveredFinalReport(finalResponse);
 
     if (!finalReport && this.activeStatusMessage) {
       await withTimeout(
@@ -511,6 +509,26 @@ export class LiveDiscordRunRenderer {
       );
     }
     this.finalDeliverySuccessful = true;
+  }
+
+  private undeliveredFinalReport(finalResponse: string): string {
+    const normalizedFinal = finalResponse.trim();
+    if (!normalizedFinal) return "";
+    if (!this.deliveredAssistantText) return normalizedFinal;
+
+    if (normalizedFinal.startsWith(this.deliveredAssistantText)) {
+      return normalizedFinal.slice(this.deliveredAssistantText.length).trim();
+    }
+
+    // Pi may emit the final assistant answer as a completed live chunk before
+    // returning the same answer from prompt(). When earlier progress reports
+    // were also delivered, the final response is not prefixed by the whole
+    // delivered transcript; it is the already-delivered suffix.
+    if (this.deliveredAssistantText.trimEnd().endsWith(normalizedFinal)) {
+      return "";
+    }
+
+    return normalizedFinal;
   }
 
   private createAssistantEntry(): AssistantEntry {
