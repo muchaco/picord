@@ -1,4 +1,5 @@
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BashOperations, EditOperations, LsOperations, ReadOperations, WriteOperations } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
@@ -27,6 +28,73 @@ function globToRegExp(pattern: string): RegExp {
 }
 
 export { globToRegExp };
+
+function maskQuotedShellText(line: string): string {
+  let masked = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+
+  for (const char of line) {
+    if (quote) {
+      if (quote === '"' && escaped) {
+        escaped = false;
+        masked += " ";
+        continue;
+      }
+      if (quote === '"' && char === "\\") {
+        escaped = true;
+        masked += " ";
+        continue;
+      }
+      if (char === quote) {
+        quote = undefined;
+      }
+      masked += " ";
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      masked += " ";
+      continue;
+    }
+
+    masked += char;
+  }
+
+  return masked;
+}
+
+function heredocDelimiter(line: string): string | undefined {
+  const match = line.match(/<<-?\s*(?:'([^']+)'|"([^"]+)"|([^\s;&|()<>]+))/);
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+export function shellTextForPathTokenScan(command: string): string {
+  const output: string[] = [];
+  let activeHeredoc: string | undefined;
+
+  for (const line of command.split(/\r?\n/)) {
+    if (activeHeredoc) {
+      if (line.trim() === activeHeredoc) {
+        activeHeredoc = undefined;
+      }
+      output.push("");
+      continue;
+    }
+
+    output.push(maskQuotedShellText(line));
+    activeHeredoc = heredocDelimiter(line);
+  }
+
+  return output.join("\n");
+}
+
+export function extractBashPathTokens(command: string): string[] {
+  const scanText = shellTextForPathTokenScan(command);
+  const tokenPattern = /(^|[\s;&|()<>])(~\/[^\s'"`;&|()<>]+|\/[^\s'"`;&|()<>]+|\.\.\/[^\s'"`;&|()<>]+|\.\/[^\s'"`;&|()<>]+|\.env(?:\.[^\s'"`;&|()<>]+)?)/g;
+  return [...scanText.matchAll(tokenPattern)].map((match) => match[2]);
+}
 
 function isBinaryBuffer(buffer: Buffer): boolean {
   const sample = buffer.subarray(0, Math.min(buffer.length, 512));
@@ -258,7 +326,7 @@ export class WorkspaceGuard {
   }
 
   private async authorizeCommand(command: string, context: AccessContext): Promise<void> {
-    const tokens = command.match(/(~\/[^\s'"`]+|\/[^\s'"`]+|\.\.\/[^\s'"`]+|\.\/[^\s'"`]+|\.env(?:\.[^\s'"`]+)?)/g) ?? [];
+    const tokens = extractBashPathTokens(command);
 
     for (const token of tokens) {
       if (token.startsWith(".env")) {
@@ -274,7 +342,28 @@ export class WorkspaceGuard {
       const absolutePath = token.startsWith("~/")
         ? path.join(process.env.HOME || this.workspaceRoot, token.slice(2))
         : path.resolve(this.workspaceRoot, token);
+      if (await this.isDefinitelyNotExistingFilesystemTarget(absolutePath)) {
+        continue;
+      }
       await this.authorizePath(absolutePath, "search", context, true);
+    }
+  }
+
+  private async isDefinitelyNotExistingFilesystemTarget(absolutePath: string): Promise<boolean> {
+    try {
+      await access(absolutePath, fsConstants.F_OK);
+      return false;
+    } catch {
+      // Continue below: a missing target may still be a filesystem write target if
+      // its parent exists. If neither target nor parent exists, bash commands often
+      // use the token as non-filesystem data, such as an API route argument.
+    }
+
+    try {
+      await access(path.dirname(absolutePath), fsConstants.F_OK);
+      return false;
+    } catch {
+      return true;
     }
   }
 }
