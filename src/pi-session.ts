@@ -73,10 +73,7 @@ import {
   createDiscordExtensionBindings,
   notifyExtensionBindingFailure,
 } from "./extension-bindings.js";
-import {
-  filterOutPicordExtensions,
-  getPicordPackageRoot,
-} from "./pi-resource-loader.js";
+import { filterOutPicordExtensions } from "./pi-resource-loader.js";
 import { createSafeCustomTools } from "./safe-tools.js";
 import { loadMCPTools, closeMCPConnections } from "./mcp-integration.js";
 import type {
@@ -1465,7 +1462,6 @@ export class PiSessionPool {
       ...projectSettings,
       packages: packagesWithoutPicord,
     });
-    const picordSkillsPath = path.join(getPicordPackageRoot(), "skills");
     const resourceLoader = new DefaultResourceLoader({
       cwd: root,
       agentDir: path.join(homedir(), ".pi", "agent"),
@@ -1473,7 +1469,6 @@ export class PiSessionPool {
       noThemes: true,
       appendSystemPrompt: [buildSystemPrompt(this.config)],
       extensionsOverride: (base) => filterOutPicordExtensions(base),
-      additionalSkillPaths: [picordSkillsPath],
     });
 
     const previousDisableNestedRuntime = process.env.PICORD_DISABLE_NESTED_RUNTIME;

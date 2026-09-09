@@ -30,7 +30,7 @@ If you remember one thing, remember this:
 - a Discord bot that runs pi as an extension
 - project channel → workspace mapping
 - thread → pi session binding
-- pi skills exposed as slash commands
+- project/global pi skills exposed as slash commands; picord does not ship or inject its own skills
 - model and thinking controls from Discord
 - provider login and API key update flows from Discord
 - native pi session resume support
@@ -184,7 +184,7 @@ npm run doctor
 npm run smoke:discord
 ```
 
-If slash commands drift after adding commands or skills, run:
+If slash commands drift after adding Discord commands or project/global pi skills, run:
 
 ```bash
 npm run sync:discord-commands
