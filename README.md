@@ -4,7 +4,7 @@
 
 Fork package identity: `@muchaco/picord`
 
-This fork targets `@earendil-works/pi-coding-agent@0.84.3` and is installed from a pinned Git commit. It is not published to npm.
+This fork targets `@earendil-works/pi-coding-agent@1.0.0` and is installed from a pinned Git commit. It is not published to npm.
 
 It lets you use pi from Discord while keeping pi’s native sessions, models, skills, and extensions.
 
@@ -246,33 +246,13 @@ export PICORD_EXA_API_KEY=your_exa_api_key
 - `hostChannelName`: fallback control channel name; defaults to `host`
 - `blockedPathPatterns`: sensitive files that stay blocked or approval-gated
 - `critiqueAutoShare`: when true, picord appends a critique.work diff link after Discord runs that change the git working tree
-- `exaApiKey`: Optional Exa API key to skip OAuth flow; Exa works without it via MCP OAuth
+- `exaApiKey`: Optional Exa API key for the native Pi MCP connection to Exa
 
-## Built-in MCP servers
+## MCP servers
 
-Picord includes built-in MCP servers that are automatically enabled. These load in addition to any servers configured in `~/.pi/mcp.json`.
+Picord uses Pi 1.0's native MCP extension. Configure additional servers in `~/.pi/agent/mcp.json` (or trusted project `.pi/mcp.json`); Picord registers Exa by default. A configured `exa` server takes precedence over that registration. Exa may reject connections independently of Picord.
 
-### Exa (web search)
-
-[Exa](https://exa.ai) provides AI-powered web search, code search, and company research tools. Exa is **always enabled** — no API key required. On first use, Exa's hosted MCP server initiates an OAuth flow so you can authenticate in-browser for free access.
-
-**Configuration (optional):**
-
-If you have an Exa API key and want to skip the OAuth flow, set it via environment variable:
-```bash
-export PICORD_EXA_API_KEY=your_exa_api_key
-```
-
-Or in `picord.config.json`:
-```json
-{
-  "exaApiKey": "your_exa_api_key"
-}
-```
-
-Get your API key at [dashboard.exa.ai/api-keys](https://dashboard.exa.ai/api-keys).
-
-Requires `@modelcontextprotocol/sdk` with streamable HTTP transport support (v1.9.0+). If the SDK version doesn't support streamable HTTP, the Exa server is silently skipped.
+To authenticate Exa with an API key, set `PICORD_EXA_API_KEY` or `exaApiKey` in the Picord configuration. Without a key, Pi's native MCP OAuth flow applies when Exa requires it. Pi exposes the server's tools after connection via tool search.
 
 ## How to use it
 

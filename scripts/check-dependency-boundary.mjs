@@ -4,7 +4,7 @@ import path from "node:path";
 import process from "node:process";
 
 const root = path.resolve(import.meta.dirname, "..");
-const expectedPiVersion = "0.84.3";
+const expectedPiVersion = "1.0.0";
 const forbiddenScope = "@mariozechner/pi-";
 const failures = [];
 

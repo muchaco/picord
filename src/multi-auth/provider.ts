@@ -3,7 +3,7 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
-	type Context,
+	type TranscriptContext,
 	createAssistantMessageEventStream,
 	type Model,
 	type SimpleStreamOptions,
@@ -456,12 +456,12 @@ export function createRotatingStreamWrapper(
 	},
 ): (
 	model: Model<Api>,
-	context: Context,
+	context: TranscriptContext,
 	options?: SimpleStreamOptions,
 ) => AssistantMessageEventStream {
 	return (
 		model: Model<Api>,
-		context: Context,
+		context: TranscriptContext,
 		streamOptions?: SimpleStreamOptions,
 	): AssistantMessageEventStream => {
 		const stream = createAssistantMessageEventStream();

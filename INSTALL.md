@@ -73,7 +73,7 @@ before proceeding.
 
 ## 3. Install picord into pi
 
-This fork targets Pi 0.84.3 and is not published to npm. Install a reviewed,
+This fork targets Pi 1.0.0 and is not published to npm. Install a reviewed,
 immutable commit (replace `<commit>` with the approved full SHA):
 
 ```bash

@@ -1,5 +1,8 @@
 import {
   createAgentSession,
+  createCodemodeExtension,
+  createMcpExtension,
+  createToolSearchExtension,
   createBashTool,
   createEditTool,
   createReadTool,
@@ -75,7 +78,6 @@ import {
 } from "./extension-bindings.js";
 import { filterOutPicordExtensions } from "./pi-resource-loader.js";
 import { createSafeCustomTools } from "./safe-tools.js";
-import { loadMCPTools, closeMCPConnections } from "./mcp-integration.js";
 import type {
   ModelSummary,
   PicordRuntimeConfig,
@@ -1143,7 +1145,6 @@ export class PiSessionPool {
     }
     this.sessions.clear();
     this.queues.clear();
-    closeMCPConnections();
   }
 
   getWorkspaceModelScope(workspaceKey: string): WorkspaceModelScopeResult {
@@ -1467,6 +1468,16 @@ export class PiSessionPool {
       agentDir: path.join(homedir(), ".pi", "agent"),
       settingsManager,
       noThemes: true,
+      extensionFactories: [
+        createCodemodeExtension(),
+        createToolSearchExtension(),
+        createMcpExtension(),
+        (pi) => pi.registerMcpServer("exa", {
+          url: "https://mcp.exa.ai/mcp",
+          exposure: "deferred",
+          ...(this.config.exaApiKey ? { headers: { "x-api-key": this.config.exaApiKey } } : {}),
+        }),
+      ],
       appendSystemPrompt: [buildSystemPrompt(this.config)],
       extensionsOverride: (base) => filterOutPicordExtensions(base),
     });
@@ -1593,7 +1604,6 @@ export class PiSessionPool {
       customTools: [
         ...tools,
         ...createSafeCustomTools(workspaceState.guard, accessContext),
-        ...(await loadMCPTools({ exaApiKey: this.config.exaApiKey })).tools.map((t) => t.tool),
       ],
       scopedModels: scopedModels.length > 0 ? scopedModels : undefined,
       sessionManager,

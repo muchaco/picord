@@ -4,7 +4,7 @@ import { assertRespondCanStart, followUpAgentSession, steerAgentSession } from "
 describe("Pi session steering", () => {
   test("steering does not abort a running Bash tool", async () => {
     const session = {
-      steer: vi.fn(async () => undefined),
+      steer: vi.fn(async () => "queued" as const),
       abortBash: vi.fn(),
       isBashRunning: true,
     };
@@ -16,7 +16,7 @@ describe("Pi session steering", () => {
   });
 
   test("the one-at-a-time SDK queue receives every steering message", async () => {
-    const session = { steer: vi.fn(async () => undefined) };
+    const session = { steer: vi.fn(async () => "queued" as const) };
 
     await steerAgentSession(session, "first");
     await steerAgentSession(session, "second");
@@ -28,7 +28,7 @@ describe("Pi session steering", () => {
 describe("Pi session follow-up queueing", () => {
   test("follow-up queues work without aborting a running Bash tool", async () => {
     const session = {
-      followUp: vi.fn(async () => undefined),
+      followUp: vi.fn(async () => "queued" as const),
       abortBash: vi.fn(),
       isBashRunning: true,
     };
@@ -40,7 +40,7 @@ describe("Pi session follow-up queueing", () => {
   });
 
   test("native image content is passed to the follow-up queue", async () => {
-    const session = { followUp: vi.fn(async () => undefined) };
+    const session = { followUp: vi.fn(async () => "queued" as const) };
     const image = {
       type: "image" as const,
       data: "iVBORw0KGgo=",
